@@ -115,13 +115,16 @@ class AccountInfo(BaseModel):
 
         login = int(g("login", 0))
         server = str(g("server", "") or "")
-        # infer account_type
+        # Infer account_type per MT5 convention:
+        # - server name contains 'contest' -> contest
+        # - login < 100000 -> demo
+        # - otherwise -> real
         if "contest" in server.lower():
-            pass
+            account_type: Literal["demo", "real", "contest"] = "contest"
         elif login < 100000:
-            pass
+            account_type = "demo"
         else:
-            pass
+            account_type = "real"
         return cls(
             login=login,
             trade_account=str(g("login", "")),
@@ -143,6 +146,7 @@ class AccountInfo(BaseModel):
             limit_orders=g("limit_orders"),
             margin_call=g("margin_so_call") or g("margin_call"),
             margin_stop_out=g("margin_so_so") or g("margin_stop_out"),
+            account_type=account_type,
         )
 
 

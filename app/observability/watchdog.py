@@ -56,14 +56,21 @@ class Watchdog(QObject):
         self.threshold_s = threshold_s
         self._workers: dict[str, datetime] = {}
         self._frozen: set[str] = set()
+        # Don't start the QTimer in __init__ — it runs at module import
+        # time, before QApplication exists (Phase 1-3 audit C9). Callers
+        # must call :meth:`start` after the QApplication is created.
         self._timer = QTimer(self)
         self._timer.setInterval(5000)
         try:
             self._timer.timeout.connect(self._check)  # type: ignore[attr-defined]
         except Exception:
             pass
+
+    def start(self) -> None:
+        """Start the periodic 5s heartbeat-check timer. Idempotent."""
         try:
-            self._timer.start()
+            if not self._timer.isActive():
+                self._timer.start()
         except Exception:
             pass
 

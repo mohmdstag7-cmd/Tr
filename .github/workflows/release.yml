@@ -25,22 +25,56 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install -e ".[dev]"
+          # Inno Setup for the installer step (Phase 16 will use a real .iss;
+          # for now we ship the PyInstaller one-folder build as a zip).
+          choco install innosetup --no-progress --limit-output || true
 
-      - name: Build with PyInstaller / Inno Setup
+      - name: Build with PyInstaller
+        shell: pwsh
         run: |
-          echo "Building installer and portable zip..."
-          # Placeholder build commands — replace with actual build script
-          # python -m PyInstaller app.spec
-          # iscc installer.iss
-          # For Phase 1, create dummy artifacts if build script not present
-          mkdir -p dist
-          if (-not (Test-Path "dist/MT5TradingWorkstation-Setup-${{ github.ref_name }}.exe")) {
-            "dummy installer" | Out-File -Encoding ascii "dist/MT5TradingWorkstation-Setup-${{ github.ref_name }}.exe"
+          Write-Host "Building MT5 Trading Workstation with PyInstaller..."
+          python -m PyInstaller --noconfirm --onedir --windowed `
+            --name MT5TradingWorkstation `
+            --collect-all MetaTrader5 `
+            --collect-all PySide6 `
+            --collect-all pyqtgraph `
+            app/main.py
+          if (-not (Test-Path "dist/MT5TradingWorkstation")) {
+            Write-Error "PyInstaller build failed: dist/MT5TradingWorkstation not found"
+            exit 1
           }
-          if (-not (Test-Path "dist/MT5TradingWorkstation-${{ github.ref_name }}-portable.zip")) {
-            Compress-Archive -Path "dist/MT5TradingWorkstation-Setup-${{ github.ref_name }}.exe" -DestinationPath "dist/MT5TradingWorkstation-${{ github.ref_name }}-portable.zip" -Force
+          Write-Host "PyInstaller build complete."
+
+      - name: Self-check the build
+        shell: pwsh
+        run: |
+          # Verify the built exe can import MetaTrader5 + print its version.
+          # This is the same --self-check flag the app exposes (Part I2).
+          & "dist/MT5TradingWorkstation/MT5TradingWorkstation.exe" --version
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Built exe --version failed with exit code $LASTEXITCODE"
+            exit 1
           }
+          Write-Host "Built exe --version OK."
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $zipPath = "dist/MT5TradingWorkstation-$version-portable.zip"
+          Compress-Archive -Path "dist/MT5TradingWorkstation/*" -DestinationPath $zipPath -Force
+          if (-not (Test-Path $zipPath)) {
+            Write-Error "Failed to create portable zip at $zipPath"
+            exit 1
+          }
+          # Stub installer exe: copy the portable exe as the "installer" for
+          # now. Phase 16 will replace this with a real Inno Setup installer.
+          # The auto-updater verifies SHA-256, so this file must exist and
+          # match the checksum we compute next.
+          $installerPath = "dist/MT5TradingWorkstation-Setup-$version.exe"
+          Copy-Item "dist/MT5TradingWorkstation/MT5TradingWorkstation.exe" $installerPath -Force
+          Write-Host "Portable zip + installer stub created."
 
       - name: Compute SHA-256 checksums
         id: checksums

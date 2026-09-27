@@ -99,14 +99,21 @@ class PerformanceMetrics(QObject):
         self.bar_latency = LatencyHistogram()
         self.mt5_latency: dict[str, LatencyHistogram] = {}
         self._queues: dict[str, int] = {}
+        # Don't start the QTimer in __init__ — it runs at module import
+        # time, before QApplication exists (Phase 1-3 audit C9). Callers
+        # must call :meth:`start` after the QApplication is created.
         self._timer = QTimer(self)
         self._timer.setInterval(60000)
         try:
             self._timer.timeout.connect(self._tick)  # type: ignore[attr-defined]
         except Exception:
             pass
+
+    def start(self) -> None:
+        """Start the periodic 60s metrics-snapshot timer. Idempotent."""
         try:
-            self._timer.start()
+            if not self._timer.isActive():
+                self._timer.start()
         except Exception:
             pass
 

@@ -105,6 +105,9 @@ class _Worker(QObject):
             return self._conn.terminal_info()
         if name == "account_info":
             return self._conn.account_info()
+        if name == "broker_offset":
+            # Cached at initialize() time; safe to read from any thread.
+            return getattr(self._conn, "_broker_offset", 0)
         if name == "symbols_get":
             return self._symbols_get(*cmd.args, **cmd.kwargs)
         if name == "symbol_info":
@@ -298,7 +301,11 @@ class MT5Gateway(QObject):
                 if positions:
                     msg = "Connection lost while positions are open"
                     logger.critical(msg)
-                    audit_log.log("system", "mt5_connection_lost", reason=msg)  # type: ignore[call-arg,arg-type]
+                    audit_log.log(
+                        "system",
+                        "mt5_connection_lost",
+                        after={"reason": msg, "open_positions": len(positions)},
+                    )
                     self.connection_lost.emit(msg)
                 else:
                     self.connection_lost.emit("Connection lost")
@@ -343,12 +350,24 @@ class MT5Gateway(QObject):
         cmd = MT5Command(name=name, args=args, kwargs=kwargs, future=fut, timeout=timeout)
         self._queue.put(cmd)
 
-        # enforce timeout on the future
+        # Enforce timeout on the future. We spawn a daemon Timer that fires
+        # at most once. If the worker resolves the future first, the
+        # ``add_done_callback`` cancels the timer (no resource leak).
+        # ``set_exception`` is wrapped in try/except because between
+        # ``fut.done()`` returning False and the call below, the worker
+        # may complete the future (TOCTOU race) — calling ``set_exception``
+        # on a done future raises ``InvalidStateError``.
         def _timeout_check() -> None:
             if not fut.done():
-                fut.set_exception(MT5TimeoutError(f"MT5 call {name} timed out after {timeout}s"))
+                try:
+                    fut.set_exception(MT5TimeoutError(f"MT5 call {name} timed out after {timeout}s"))
+                except concurrent.futures.InvalidStateError:
+                    pass  # Worker won the race; nothing to do.
 
-        threading.Timer(timeout, _timeout_check).start()
+        timer = threading.Timer(timeout, _timeout_check)
+        timer.daemon = True
+        fut.add_done_callback(lambda _fut: timer.cancel())
+        timer.start()
         return fut
 
     # public API
@@ -371,6 +390,17 @@ class MT5Gateway(QObject):
 
     def account_info(self) -> concurrent.futures.Future[AccountInfo | None]:
         return self._submit("account_info", timeout=5.0)
+
+    def broker_offset(self) -> concurrent.futures.Future[int]:
+        """Return the cached broker UTC offset (seconds) via the worker thread.
+
+        The offset is computed once at ``initialize()`` time and cached on
+        the ``MT5Connection`` instance. Reading it through the gateway (rather
+        than calling :func:`detect_broker_utc_offset` directly from the main
+        thread) avoids the ADR-002 violation noted in the Phase 1-3 audit
+        (C3): no MT5 calls happen outside the gateway worker thread.
+        """
+        return self._submit("broker_offset", timeout=2.0)
 
     def symbols_get(self, group: str | None = None) -> concurrent.futures.Future[list[SymbolInfo]]:
         return self._submit("symbols_get", group, timeout=10.0)
@@ -414,10 +444,43 @@ class MT5Gateway(QObject):
         return self._state == "connected"
 
     def close(self) -> None:
+        """Stop the worker QThread and the heartbeat QTimer.
+
+        Safe to call multiple times. Without this, the worker thread leaks
+        and Qt prints "QThread: Destroyed while thread is still running" on
+        garbage collection (Phase 1-3 audit C7).
+        """
         try:
             self._heartbeat.stop()
+        except Exception:
+            pass
+        try:
             self._worker.stop()
+        except Exception:
+            pass
+        try:
             self._thread.quit()
             self._thread.wait(2000)
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        """Best-effort cleanup if :meth:`close` wasn't called explicitly.
+
+        Per Opus 5.5 audit: ``__del__`` may run on the GUI thread during GC.
+        ``thread.wait()`` without a timeout would deadlock if the worker is
+        blocked. Use a short timeout and never block GC.
+        """
+        try:
+            self._heartbeat.stop()
+        except Exception:
+            pass
+        try:
+            self._worker.stop()
+        except Exception:
+            pass
+        try:
+            self._thread.quit()
+            self._thread.wait(100)  # 100ms max — never block GC
         except Exception:
             pass
