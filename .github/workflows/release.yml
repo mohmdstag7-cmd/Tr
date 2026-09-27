@@ -65,7 +65,7 @@ jobs:
           }
           Write-Host "Build verification OK."
 
-      - name: Package portable zip
+      - name: Package portable zip + installer stub
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
@@ -81,7 +81,12 @@ jobs:
           # match the checksum we compute next.
           $installerPath = "dist/MT5TradingWorkstation-Setup-$version.exe"
           Copy-Item "dist/MT5TradingWorkstation/MT5TradingWorkstation.exe" $installerPath -Force
+          # Remove the one-folder build dir so it doesn't interfere with
+          # the sha256sum glob below.
+          Remove-Item -Recurse -Force "dist/MT5TradingWorkstation"
           Write-Host "Portable zip + installer stub created."
+          Write-Host "dist/ contents:"
+          Get-ChildItem dist/ | Format-Table Name, Length
 
       - name: Compute SHA-256 checksums
         id: checksums
@@ -89,11 +94,13 @@ jobs:
         run: |
           set -e
           cd dist
+          # Only hash the installer exe + portable zip + checksums.txt (not the
+          # one-folder build dir, which was removed above).
           sha256sum MT5TradingWorkstation-Setup-*.exe | awk '{print $1}' > /tmp/installer_sha.txt
           sha256sum MT5TradingWorkstation-*-portable.zip | awk '{print $1}' > /tmp/portable_sha.txt
           echo "installer_sha=$(cat /tmp/installer_sha.txt)" >> "$GITHUB_OUTPUT"
           echo "portable_sha=$(cat /tmp/portable_sha.txt)" >> "$GITHUB_OUTPUT"
-          sha256sum * > checksums.txt
+          sha256sum MT5TradingWorkstation-Setup-*.exe MT5TradingWorkstation-*-portable.zip > checksums.txt
           cat checksums.txt
 
       - name: Generate latest.json
