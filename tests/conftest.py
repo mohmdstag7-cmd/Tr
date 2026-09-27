@@ -180,10 +180,24 @@ def _configure_logging_for_session(tmp_path_factory: pytest.TempPathFactory) -> 
     except Exception:
         pass
 
+    # Also inject FakeMT5 into sys.modules so that MainWindow (which now
+    # constructs an MT5Gateway in __init__) can find a mock MetaTrader5
+    # module. Without this, the gateway's lazy resolver raises
+    # MT5TerminalNotFoundError and the window construction fails.
+    # FakeMT5 is NEVER imported by app/ modules (per D3) — only by tests/.
+    import sys
+
+    if "MetaTrader5" not in sys.modules:
+        from tests.fakes.fake_mt5 import FakeMT5
+
+        sys.modules["MetaTrader5"] = FakeMT5()
+
     yield log_dir
 
     logger.remove()
     logger_mod._log_dir = None  # type: ignore[attr-defined]
+    # Don't remove FakeMT5 from sys.modules — other tests in the same
+    # session may have imported it transitively.
 
 
 @pytest.fixture(autouse=True)
@@ -195,14 +209,23 @@ def _disable_auto_update_check_in_tests(monkeypatch: pytest.MonkeyPatch) -> None
     runs in a QThread and writes logs via loguru — which races with tests
     that call ``configure_logging()`` themselves and ``logger.remove()``.
 
-    We patch ``QTimer.singleShot`` to a no-op so the auto-check never fires.
+    Per Opus 5.5 audit: we MUST NOT blindly patch ``QTimer.singleShot`` to
+    no-op — that breaks ``QThread.quit()`` which uses an internal
+    ``singleShot(0, ...)`` to schedule ``QEvent::Quit``. Instead, only
+    suppress singleShot calls with ``msec >= 1000`` (app-level timers).
     """
     from PySide6.QtCore import QTimer
 
-    def _no_op_single_shot(*args: object, **kwargs: object) -> None:  # noqa: ARG001
-        return None
+    _orig_single_shot = QTimer.singleShot
 
-    monkeypatch.setattr(QTimer, "singleShot", _no_op_single_shot, raising=False)
+    def _patched_single_shot(msec: int, receiver: object, *args: object, **kwargs: object) -> None:  # type: ignore[no-untyped-def]
+        # Suppress app-level timers (>= 1 second). QThread.quit() and other
+        # internal Qt mechanisms use msec=0 — let those through.
+        if isinstance(msec, int | float) and msec >= 1000:
+            return None
+        return _orig_single_shot(msec, receiver, *args, **kwargs)  # type: ignore[call-arg]
+
+    monkeypatch.setattr(QTimer, "singleShot", _patched_single_shot, raising=False)
 
 
 # ----------------------------------------------------------------- Phase 3

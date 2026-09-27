@@ -62,13 +62,18 @@ class AuditLog:
             base.mkdir(parents=True, exist_ok=True)
             date_str = entry.timestamp.date().isoformat()
             file_path = base / f"{date_str}.jsonl"
+            # Redact secrets before serializing — secrets in `before`/`after`
+            # would otherwise land on disk in plaintext. See SPEC Part D5 and
+            # the Phase 1-3 audit (M3).
+            from app.observability.masking import redact_dict
+
             data = {
                 "timestamp": entry.timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
                 "source": entry.source,
                 "action": entry.action,
-                "before": entry.before,
-                "after": entry.after,
-                "context": entry.context,
+                "before": redact_dict(entry.before) if entry.before else None,
+                "after": redact_dict(entry.after) if entry.after else None,
+                "context": redact_dict(entry.context) if entry.context else {},
             }
             with file_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(data, ensure_ascii=False) + "\n")

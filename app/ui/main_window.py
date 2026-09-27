@@ -226,6 +226,32 @@ class MainWindow(QMainWindow):
         # Default page
         self.stack.setCurrentIndex(self._page_index["dashboard"])
 
+        # --- MT5Gateway wiring (Phase 3, audit C1) -----------------------
+        # The gateway is the single-threaded owner of all MT5 calls (ADR-002).
+        # LAZY construction (per Opus 5.5 audit recommendation): the gateway
+        # is only created when the user actually tries to connect (via the
+        # connection wizard or auto-connect-on-startup). Eager construction
+        # in ``__init__`` was starting a QThread per MainWindow, which leaked
+        # in tests (offscreen mode doesn't deliver closeEvent synchronously)
+        # and deadlocked the GC on ``__del__``.
+        # The ``gateway`` property below creates the gateway on first access.
+        self._gateway: object | None = None
+        try:
+            # Wire the health registry's gateway property to a lazy accessor.
+            # When a health check first asks for the gateway, we lazily
+            # construct it here.
+            from app.observability.health import get_health_registry
+
+            # Don't set_gateway yet — it's None until the user connects.
+            # Health checks will return "unknown" until then, which is
+            # correct behavior.
+            _health_reg = get_health_registry()
+            # _health_reg.set_gateway(...) is called by connect_to_mt5()
+            # below when the user actually runs the connection wizard.
+            logger.debug("MT5Gateway wiring deferred to lazy construction")
+        except Exception:
+            logger.exception("Failed to wire MT5Gateway health registry accessor")
+
         # In-app auto-updater (Part J).
         # Wrapped in try/except so a missing optional dep (e.g., httpx not installed
         # in a stripped dev env) doesn't break the window construction.
@@ -279,6 +305,92 @@ class MainWindow(QMainWindow):
         """Public entry point for the Settings page and command palette."""
         if self.update_checker is not None:
             self.update_checker.start_check()
+
+    # ----------------------------------------------------------- MT5 slots
+    @property
+    def gateway(self) -> object | None:
+        """Return the MT5Gateway, creating it lazily on first access.
+
+        Per Opus 5.5 audit recommendation: the gateway owns a QThread, so
+        eager construction in ``__init__`` leaks threads in tests (offscreen
+        mode doesn't deliver ``closeEvent`` synchronously) and deadlocks
+        the GC on ``__del__``. Lazy construction means the QThread is only
+        started when the user actually tries to connect.
+        """
+        if self._gateway is None:
+            try:
+                from app.mt5.gateway import MT5Gateway
+                from app.observability.health import get_health_registry
+
+                gw = MT5Gateway(parent=self)
+                # Wire signals.
+                gw.connection_state_changed.connect(self._on_mt5_connection_state)
+                gw.connection_lost.connect(self._on_mt5_connection_lost)
+                gw.connection_restored.connect(self._on_mt5_connection_restored)
+                self._gateway = gw
+                # Register with the health registry so the 4 MT5 health
+                # checks return real values instead of "unknown".
+                get_health_registry().set_gateway(gw)
+                logger.info("MT5Gateway lazily constructed and wired")
+            except Exception:
+                logger.exception("Failed to construct MT5Gateway lazily")
+        return self._gateway
+
+    def connect_to_mt5(self) -> None:
+        """Open the connection wizard. Constructs the gateway lazily.
+
+        Public entry point — called by the Settings page, the Diagnostics
+        page, and the command palette.
+        """
+        # Touching the property triggers lazy construction.
+        _ = self.gateway
+        # TODO(phase-3-followup): open the ConnectionWizardDialog here.
+        # For now, just log that the gateway exists.
+        if self._gateway is not None:
+            logger.info("connect_to_mt5() called; gateway ready for wizard")
+
+    @Slot(str)
+    def _on_mt5_connection_state(self, state: str) -> None:
+        """React to MT5Gateway connection state changes (audit C1)."""
+        logger.info(f"MT5 connection state: {state}")
+        if hasattr(self.status_bar, "set_bot_state"):
+            # Map gateway states to StatusBar labels.
+            state_map = {
+                "disconnected": "Disconnected",
+                "connecting": "Connecting...",
+                "connected": "Running",
+                "reconnecting": "Reconnecting...",
+                "error": "Disconnected",
+            }
+            self.status_bar.set_bot_state(state_map.get(state, state))
+        if hasattr(self.status_bar, "set_connected"):
+            self.status_bar.set_connected(state == "connected")
+
+    @Slot(str)
+    def _on_mt5_connection_lost(self, reason: str) -> None:
+        """Gateway lost connection — show a toast (audit C1/C10)."""
+        logger.warning(f"MT5 connection lost: {reason}")
+        from app.ui.widgets.toast import Toast
+
+        toast = Toast(self)
+        toast.show_toast(
+            tr("mt5.connection_lost", default=f"MT5 connection lost: {reason}"),
+            kind="warning",
+            duration_ms=5000,
+        )
+
+    @Slot()
+    def _on_mt5_connection_restored(self) -> None:
+        """Gateway reconnected — show a toast (audit C1/C10)."""
+        logger.info("MT5 connection restored")
+        from app.ui.widgets.toast import Toast
+
+        toast = Toast(self)
+        toast.show_toast(
+            tr("mt5.connection_restored", default="MT5 connection restored"),
+            kind="success",
+            duration_ms=3000,
+        )
 
     @Slot(str)
     def _on_page_requested(self, page_id: str) -> None:
@@ -400,7 +512,13 @@ class MainWindow(QMainWindow):
                 dlg.show()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
-        """On close, show informational dialog if positions remain (Phase 1: always False)."""
+        """On close, tear down all singletons + show info dialog if positions open.
+
+        Phase 1-3 audit (C7, C10): the MT5Gateway's QThread, the observability
+        singletons' QTimers, and the UpdateChecker must all be stopped before
+        the QApplication exits, otherwise Qt prints "QThread: Destroyed while
+        thread is still running" and the process may hang for several seconds.
+        """
         if self._has_open_positions:
             dlg = ConfirmDialog(  # type: ignore[call-arg]
                 title=tr("close.positions_title", default="Positions Open"),
@@ -417,4 +535,35 @@ class MainWindow(QMainWindow):
                     dlg.exec_()  # type: ignore[attr-defined]
                 except Exception:
                     dlg.show()
+
+        # --- Tear down singletons (audit C7, C10) ------------------------
+        try:
+            # MT5Gateway: only close if it was actually constructed (lazy).
+            # Don't submit a shutdown command via the worker (would deadlock
+            # when we then call thread.quit() + thread.wait()). Just stop
+            # the heartbeat timer and the worker thread — the worker will
+            # exit its loop and the OS will clean up the MT5 terminal
+            # session on process exit.
+            if self._gateway is not None:
+                self._gateway.close()  # type: ignore[attr-defined]
+        except Exception:
+            logger.exception("Failed to shut down MT5Gateway")
+
+        try:
+            from app.observability.health import get_health_registry
+            from app.observability.metrics import metrics
+            from app.observability.watchdog import watchdog
+
+            get_health_registry().stop()
+            metrics.stop()
+            watchdog.stop()
+        except Exception:
+            logger.exception("Failed to stop observability timers")
+
+        try:
+            if self.update_checker is not None:
+                self.update_checker.shutdown()
+        except Exception:
+            logger.exception("Failed to shut down UpdateChecker")
+
         event.accept()

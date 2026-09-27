@@ -184,6 +184,20 @@ def main(argv: list[str] | None = None) -> None:
     tokens = get_tokens(settings.theme)
     app.setStyleSheet(generate_qss(tokens))
 
+    # Start the observability singletons' periodic timers NOW that QApplication
+    # exists (Phase 1-3 audit C9 — these QTimers can't start before QApplication).
+    try:
+        from app.observability.health import get_health_registry
+        from app.observability.metrics import metrics
+        from app.observability.watchdog import watchdog
+
+        get_health_registry().start()
+        metrics.start()
+        watchdog.start()
+        logger.info("Observability timers started (health, metrics, watchdog)")
+    except Exception:
+        logger.exception("Failed to start observability timers")
+
     # Try to load the real MainWindow, fall back to a minimal placeholder
     try:
         from app.ui.main_window import MainWindow as RealMainWindow  # type: ignore[import-untyped]
@@ -202,17 +216,26 @@ def main(argv: list[str] | None = None) -> None:
 
         window_cls = FallbackMainWindow
 
-    lock = None
-    if args.profile is not None:
-        from app.core.single_instance import InstanceAlreadyRunningError, SingleInstance
+    # Acquire the single-instance lock with a default profile name when
+    # ``--profile`` is not provided (Phase 1-3 audit C11 — the spec requires
+    # single-instance per SPEC Part D3, but the lock was only acquired when
+    # ``--profile NAME`` was passed, allowing unlimited concurrent instances
+    # on default invocation).
+    from app.core.single_instance import InstanceAlreadyRunningError, SingleInstance
 
-        try:
-            lock = SingleInstance(profile_name=str(args.profile))
-            lock.__enter__()
-        except InstanceAlreadyRunningError as exc:
-            logger.error(str(exc))
-            print(str(exc), file=sys.stderr)
-            sys.exit(1)
+    profile_name = str(args.profile) if args.profile is not None else "default"
+    lock = None
+    try:
+        lock = SingleInstance(profile_name=profile_name)
+        lock.__enter__()
+    except InstanceAlreadyRunningError as exc:
+        logger.error(str(exc))
+        print(
+            f"Another instance is already running for profile '{profile_name}'. "
+            "Use --profile NAME to start a different profile.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     window = window_cls()
     window.show()

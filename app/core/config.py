@@ -27,6 +27,16 @@ class AppSettings(BaseSettings):
     check_updates_on_startup: bool = True
     pause_updates_during_auto: bool = True
     update_repo: str = "mohmdstag7-cmd/Tr"
+    # Supabase connection (Phase 4 will use these; added now so the health
+    # check ``_check_supabase`` has a real URL to probe instead of always
+    # returning "unknown" — Phase 1-3 audit M2).
+    supabase_url: str | None = None
+    supabase_anon_key: str | None = None
+    # LLM "Ask AI" integration (Phase 13) — declared here so the masking
+    # filter has the field name available early.
+    llm_api_key: str | None = None
+    llm_endpoint: str | None = None
+    llm_model: str | None = None
 
     def save(self) -> None:
         """Persist these settings to disk as JSON (calls save_settings(self))."""

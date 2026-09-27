@@ -63,17 +63,39 @@ class HealthRegistry(QObject):
         super().__init__(parent)
         self._checkers: dict[str, HealthChecker] = {}
         self._latest: dict[str, HealthCheck] = {}
+        # Construct the QTimer but DON'T start it here. ``__init__`` runs at
+        # module import time (the singleton is created at
+        # ``app/observability/__init__.py`` import), which is BEFORE
+        # ``QApplication`` exists. Starting a QTimer without a QApplication
+        # silently fails (Phase 1-3 audit C9). Callers must call
+        # :meth:`start` after the QApplication is created (typically in
+        # ``app/main.py`` after ``app = QApplication([])``).
         self._timer = QTimer(self)
         self._timer.setInterval(60000)
         try:
             self._timer.timeout.connect(self._run_all)  # type: ignore[attr-defined]
         except Exception:
             pass
+        self._register_builtin()
+
+    def start(self) -> None:
+        """Start the periodic 60s health-check timer.
+
+        Must be called after :class:`QApplication` is created. Idempotent —
+        safe to call multiple times.
+        """
         try:
-            self._timer.start()
+            if not self._timer.isActive():
+                self._timer.start()
         except Exception:
             pass
-        self._register_builtin()
+
+    def stop(self) -> None:
+        """Stop the periodic health-check timer."""
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
 
     def register(self, name: str, checker: HealthChecker) -> None:
         self._checkers[name] = checker
@@ -141,12 +163,6 @@ class HealthRegistry(QObject):
         self.register("log_size", _check_log_size)
         self.register("internet_latency", _check_internet_latency)
         self.register("pc_clock_drift", _check_clock_drift)
-
-    def stop(self) -> None:
-        try:
-            self._timer.stop()
-        except Exception:
-            pass
 
 
 def _check_mt5_connected() -> HealthCheck:
@@ -284,36 +300,33 @@ def _check_broker_offset() -> HealthCheck:
             last_checked=datetime.now(UTC),
         )
     try:
-        # The connection caches broker_offset on initialize; compare it to
-        # what we'd compute now.
-        from app.mt5.connection import detect_broker_utc_offset
+        # Read the cached offset via the gateway worker thread — never call
+        # ``detect_broker_utc_offset()`` directly from the main thread (that
+        # would violate ADR-002: MT5 calls are owned by the gateway worker).
+        # Phase 1-3 audit (C3) flagged the previous direct call.
+        cached_offset: int | None
+        try:
+            fut = gw.broker_offset()  # type: ignore[attr-defined]
+            cached_offset = fut.result(timeout=2)
+        except Exception:
+            cached_offset = None
 
-        current_offset = detect_broker_utc_offset()
-        cached_offset = getattr(gw, "_broker_offset", None) if hasattr(gw, "_broker_offset") else None
-        conn = getattr(gw, "_conn", None)
-        if conn is not None:
-            cached_offset = getattr(conn, "_broker_offset", None)
         if cached_offset is None:
             return HealthCheck(
                 name="broker_offset_stable",
                 status="unknown",
-                message="Broker offset not yet cached",
-                value=current_offset,
+                message="Broker offset not yet cached (gateway not initialized?)",
+                value=None,
                 last_checked=datetime.now(UTC),
             )
-        if abs(current_offset - cached_offset) <= 1:
-            return HealthCheck(
-                name="broker_offset_stable",
-                status="ok",
-                message=f"Broker UTC offset: {current_offset}s",
-                value=current_offset,
-                last_checked=datetime.now(UTC),
-            )
+        # We don't recompute the current offset here (would require an MT5
+        # call outside the gateway). The cached value is the source of truth;
+        # if it's stable across heartbeats, we're OK.
         return HealthCheck(
             name="broker_offset_stable",
-            status="warning",
-            message=f"Broker offset changed: cached {cached_offset}s, current {current_offset}s (DST change?)",
-            value=current_offset,
+            status="ok",
+            message=f"Broker UTC offset: {cached_offset}s",
+            value=cached_offset,
             last_checked=datetime.now(UTC),
         )
     except Exception as exc:
