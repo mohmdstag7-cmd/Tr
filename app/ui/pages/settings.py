@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
@@ -135,6 +136,50 @@ class SettingsPage(QWidget):
         general_layout.addWidget(self._simple_mode_cb)
 
         layout.addWidget(general_group)
+
+        # ---- Logging section (Phase 2) ----
+        from app.observability.categories import LOG_CATEGORIES
+        from app.observability.logger import get_log_dir, set_level
+
+        logging_group = QGroupBox(tr("settings.logging.title", default="Logging"), self)
+        logging_layout = QVBoxLayout(logging_group)
+
+        # Log dir row
+        dir_row = QHBoxLayout()
+        dir_row.addWidget(QLabel(tr("settings.logging.dir", default="Log directory:")))
+        self._log_dir_label = QLabel(str(get_log_dir()), self)
+        self._log_dir_label.setObjectName("LogDirLabel")
+        dir_row.addWidget(self._log_dir_label, 1)
+        self._open_logs_btn = QPushButton(tr("settings.logging.open_folder", default="Open folder"), self)
+        self._open_logs_btn.clicked.connect(self._on_open_logs_folder)
+        dir_row.addWidget(self._open_logs_btn)
+        logging_layout.addLayout(dir_row)
+
+        # Debug mode toggle
+        self._debug_mode_btn = QPushButton(
+            tr("settings.logging.debug_mode", default="Enable debug mode (30 min)"), self
+        )
+        self._debug_mode_btn.clicked.connect(self._on_enable_debug_mode)
+        logging_layout.addWidget(self._debug_mode_btn)
+
+        # Per-category level dropdowns
+        levels_form = QFormLayout()
+        self._level_combos: dict[str, QComboBox] = {}
+        for cat in LOG_CATEGORIES:
+            combo = QComboBox(self)
+            combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+            combo.setCurrentText("INFO")
+            combo.currentTextChanged.connect(lambda lvl, c=cat: set_level(c, lvl))
+            levels_form.addRow(f"{cat}", combo)
+            self._level_combos[cat] = combo
+        logging_layout.addLayout(levels_form)
+
+        # Create debug bundle button
+        self._debug_bundle_btn = QPushButton(tr("settings.logging.create_bundle", default="Create debug bundle"), self)
+        self._debug_bundle_btn.clicked.connect(self._on_create_debug_bundle)
+        logging_layout.addWidget(self._debug_bundle_btn)
+
+        layout.addWidget(logging_group)
 
         layout.addStretch(1)
 
@@ -292,3 +337,71 @@ class SettingsPage(QWidget):
             thread.wait(2000)
         except RuntimeError:
             pass
+
+    # ----------------------------------------------------------- logging slots
+    @Slot()
+    def _on_open_logs_folder(self) -> None:
+        """Open the log directory in the OS file explorer."""
+        import subprocess
+        import sys
+
+        from app.observability.logger import get_log_dir
+
+        log_dir = get_log_dir()
+        try:
+            if sys.platform == "win32":
+                # pylint: disable=consider-using-with
+                subprocess.Popen(["explorer", str(log_dir)])  # noqa: S603,S607
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(log_dir)])  # noqa: S603,S607
+            else:
+                subprocess.Popen(["xdg-open", str(log_dir)])  # noqa: S603,S607
+        except Exception:
+            # Fallback: show the path in a message box
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(self, "Log directory", str(log_dir))
+
+    @Slot()
+    def _on_enable_debug_mode(self) -> None:
+        """Enable debug mode for 30 minutes (auto-reverts)."""
+        from app.observability.logger import enable_debug_mode
+
+        enable_debug_mode(30)
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.information(
+            self,
+            tr("settings.logging.debug_mode_title", default="Debug mode"),
+            tr(
+                "settings.logging.debug_mode_msg",
+                default="Debug mode enabled for 30 minutes. All categories now log at DEBUG level.",
+            ),
+        )
+
+    @Slot()
+    def _on_create_debug_bundle(self) -> None:
+        """Create a debug bundle zip and show the path."""
+        from app.observability.debug_bundle import create_debug_bundle
+
+        try:
+            path = create_debug_bundle()
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self,
+                tr("settings.logging.bundle_created", default="Debug bundle created"),
+                tr(
+                    "settings.logging.bundle_path",
+                    default="Debug bundle saved to:\n{path}",
+                    path=str(path),
+                ),
+            )
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.critical(
+                self,
+                tr("settings.logging.bundle_failed", default="Failed to create debug bundle"),
+                str(exc),
+            )
