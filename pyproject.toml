@@ -15,7 +15,7 @@ dependencies = [
     "pyqtgraph==0.13.7",
     "MetaTrader5==5.0.45",
     "pandas==2.2.2",
-    "numpy==1.26.4",
+    "numpy==2.4.6",
     "pydantic==2.9.2",
     "pydantic-settings==2.5.2",
     "loguru==0.7.2",
