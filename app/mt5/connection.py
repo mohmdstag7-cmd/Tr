@@ -99,9 +99,7 @@ class MT5Connection:
         # friendly error mapping
         for attempt in range(3):
             try:
-                ok = _require_mt5().initialize(
-                    path=path or "", login=login, password=password, server=server, timeout=timeout
-                )
+                ok = _require_mt5().initialize(path=path or "", login=login, password=password, server=server, timeout=timeout)
             except Exception as exc:  # pragma: no cover
                 msg = str(exc).lower()
                 if "ipc timeout" in msg or "ipc initialize failed" in msg:

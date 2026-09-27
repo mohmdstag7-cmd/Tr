@@ -33,13 +33,7 @@ def find_terminals() -> list[Terminal]:
             # e.g. C:\Program Files\MetaQuotes\MetaTrader 5\terminal64.exe
             # or C:\Program Files\IC Markets\terminal64.exe
             if len(parts) >= 3:
-                broker = (
-                    parts[-2]
-                    if parts[-2].lower() != "metatrader 5"
-                    else parts[-3]
-                    if len(parts) >= 4
-                    else "MetaTrader 5"
-                )
+                broker = parts[-2] if parts[-2].lower() != "metatrader 5" else parts[-3] if len(parts) >= 4 else "MetaTrader 5"
         found.append(Terminal(path=path, broker_name=broker, data_path=data_path))
 
     # 1. Common Program Files

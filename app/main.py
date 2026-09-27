@@ -152,9 +152,7 @@ def main(argv: list[str] | None = None) -> None:
     set_session_id(new_session_id())
     install_crash_handler()
 
-    logger.info(
-        f"Starting {__app_name__} v{__version__} " f"(Python {platform.python_version()}, OS: {platform.platform()})"
-    )
+    logger.info(f"Starting {__app_name__} v{__version__} " f"(Python {platform.python_version()}, OS: {platform.platform()})")
 
     # CLI-only flags handle their own exit; we return early after running them.
     if args.version:
@@ -173,16 +171,14 @@ def main(argv: list[str] | None = None) -> None:
     from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
 
     from app.core.config import load_settings
-    from app.ui.theme.qss import generate_qss
-    from app.ui.theme.tokens import get_tokens
+    from app.ui.theme.qss import build_qss
 
     app = QApplication(sys.argv)
     app.setApplicationName(__app_name__)
     app.setApplicationVersion(__version__)
 
     settings = load_settings()
-    tokens = get_tokens(settings.theme)
-    app.setStyleSheet(generate_qss(tokens))
+    app.setStyleSheet(build_qss(settings.theme))
 
     # Start the observability singletons' periodic timers NOW that QApplication
     # exists (Phase 1-3 audit C9 — these QTimers can't start before QApplication).
@@ -231,8 +227,7 @@ def main(argv: list[str] | None = None) -> None:
     except InstanceAlreadyRunningError as exc:
         logger.error(str(exc))
         print(
-            f"Another instance is already running for profile '{profile_name}'. "
-            "Use --profile NAME to start a different profile.",
+            f"Another instance is already running for profile '{profile_name}'. " "Use --profile NAME to start a different profile.",
             file=sys.stderr,
         )
         sys.exit(1)

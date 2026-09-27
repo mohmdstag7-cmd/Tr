@@ -96,9 +96,7 @@ def redact_dict(d: dict[str, Any] | None) -> dict[str, Any]:
         elif isinstance(value, dict):
             out[key] = redact_dict(value)
         elif isinstance(value, list):
-            out[key] = [
-                redact_dict(v) if isinstance(v, dict) else _redact_value(v) if isinstance(v, str) else v for v in value
-            ]
+            out[key] = [redact_dict(v) if isinstance(v, dict) else _redact_value(v) if isinstance(v, str) else v for v in value]
         else:
             out[key] = value
     return out

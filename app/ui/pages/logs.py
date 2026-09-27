@@ -1,347 +1,255 @@
-"""Logs page with live tail and filters."""
+"""
+Premium Logs Page — left categories, center log stream with level left-border,
+right filter card, bottom toolbar. Tabular timestamps, colored badges.
+"""
 
 from __future__ import annotations
 
-import json
-import re
-import subprocess
-import sys
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import Any
-
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QTextCursor
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
-    QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
-    QMessageBox,
-    QPlainTextEdit,
+    QListWidgetItem,
     QPushButton,
-    QSplitter,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-try:
-    from PySide6.QtWidgets import QDrawer  # type: ignore[attr-defined]
-except ImportError:
-    QDrawer = None  # type: ignore[assignment]
+from app.ui.theme.tokens import FONT_MONO, FONT_SIZE, RADIUS, get_palette
 
-from app.observability.categories import LOG_CATEGORIES
-from app.observability.logger import enable_debug_mode, get_log_dir, get_logger, set_level
+LEVEL_COLORS = {
+    "DEBUG": "#8B92A8",
+    "INFO": "#38BDF8",
+    "WARNING": "#F59E0B",
+    "ERROR": "#EF4444",
+    "CRITICAL": "#DC2626",
+}
+
+CATEGORIES = [
+    ("All", "◫", 128),
+    ("Trading", "⇄", 42),
+    ("Signals", "✦", 31),
+    ("Risk", "⚠", 12),
+    ("System", "⚙", 28),
+    ("Model", "◊", 15),
+]
+
+
+class LogEntryFrame(QFrame):
+    def __init__(self, timestamp: str, level: str, category: str, message: str, theme: str = "dark", parent=None):
+        super().__init__(parent)
+        p = get_palette(theme)
+        color = LEVEL_COLORS.get(level.upper(), p.text_tertiary)
+        self.setStyleSheet(f"background-color: {p.card}; border: 1px solid {p.border}; " f"border-left: 3px solid {color}; border-radius: {RADIUS.md}px;")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(10)
+
+        ts = QLabel(timestamp)
+        ts.setFixedWidth(88)
+        ts.setStyleSheet(
+            f"font-family: {FONT_MONO}; font-size: {FONT_SIZE.caption}px; color: {p.text_tertiary}; background: transparent; border: none; font-feature-settings: 'tnum';"
+        )
+
+        badge = QLabel(level.upper())
+        badge.setFixedHeight(20)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setStyleSheet(
+            f"background-color: {color}18; color: {color}; border: 1px solid {color}30; "
+            f"border-radius: 10px; padding: 0 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em;"
+        )
+
+        cat = QLabel(category)
+        cat.setFixedWidth(72)
+        cat.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.text_secondary}; background: transparent; border: none;")
+
+        msg = QLabel(message)
+        msg.setWordWrap(True)
+        msg.setStyleSheet(f"font-size: {FONT_SIZE.body}px; color: {p.text}; background: transparent; border: none;")
+
+        lay.addWidget(ts)
+        lay.addWidget(badge)
+        lay.addWidget(cat)
+        lay.addWidget(msg, 1)
 
 
 class LogsPage(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    filterChanged = Signal(dict)
+
+    def __init__(self, parent=None, theme: str = "dark"):
         super().__init__(parent)
-        self.setObjectName("LogsPage")
-        self._current_category = "all"
-        self._level_filter: set[str] = set()
-        self._symbol_filter = ""
-        self._strategy_filter = ""
-        self._time_range = "all"
-        self._regex_filter = ""
+        self._theme = theme
+        self.setObjectName("PageRoot")
+        self._build_ui()
+        self._apply_theme(theme)
 
-        from app.ui.i18n import tr
-
+    def _build_ui(self):
         outer = QVBoxLayout(self)
-        _title = QLabel(tr("logs.title", default="Logs"), self)
-        _title.setObjectName("PageTitle")
-        _title.setStyleSheet("font-size: 20px; font-weight: 700;")
-        outer.addWidget(_title)
+        outer.setContentsMargins(24, 24, 24, 24)
+        outer.setSpacing(16)
 
-        layout = QHBoxLayout()
-        outer.addLayout(layout, 1)
+        # — Title —
+        title_row = QHBoxLayout()
+        self._title = QLabel("Logs")
+        self._title.setObjectName("PageTitle")
+        self._subtitle = QLabel("System and trading event stream")
+        p = get_palette(self._theme)
+        self._subtitle.setStyleSheet(f"font-size: {FONT_SIZE.body}px; color: {p.text_secondary}; background: transparent; border: none;")
+        title_row.addWidget(self._title)
+        title_row.addWidget(self._subtitle)
+        title_row.addStretch(1)
+        # search
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Search logs…")
+        self._search.setFixedWidth(260)
+        self._search.setObjectName("SearchInput")
+        title_row.addWidget(self._search)
+        outer.addLayout(title_row)
 
-        # Left panel: category tabs
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.addWidget(QLabel("Categories"))
-        self.category_list = QListWidget()
-        self.category_list.addItem("all")
-        for cat in LOG_CATEGORIES:
-            self.category_list.addItem(cat)
-        self.category_list.setCurrentRow(0)
-        self.category_list.currentTextChanged.connect(self._on_category_changed)
-        left_layout.addWidget(self.category_list)
-        left.setMaximumWidth(180)
+        # — Main 3-column area —
+        main = QHBoxLayout()
+        main.setSpacing(16)
 
-        # Center: live tail
-        center = QWidget()
-        center_layout = QVBoxLayout(center)
-        center_layout.addWidget(QLabel("Live Tail (last 200 lines)"))
-        self.tail_edit = QPlainTextEdit()
-        self.tail_edit.setReadOnly(True)
-        self.tail_edit.setMaximumBlockCount(500)
-        center_layout.addWidget(self.tail_edit)
+        # Left: categories
+        self._left_card = QFrame()
+        self._left_card.setObjectName("CardFrame")
+        self._left_card.setFixedWidth(200)
+        left_lay = QVBoxLayout(self._left_card)
+        left_lay.setContentsMargins(8, 8, 8, 8)
+        left_lay.setSpacing(2)
+        hdr = QLabel("CATEGORIES")
+        hdr.setStyleSheet(
+            f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.text_tertiary}; letter-spacing: 0.08em; background: transparent; border: none; padding: 8px 8px 6px 8px;"  # noqa: E501
+        )
+        left_lay.addWidget(hdr)
+        self._cat_list = QListWidget()
+        self._cat_list.setFrameShape(QFrame.NoFrame)
+        self._cat_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        for name, icon, count in CATEGORIES:
+            item = QListWidgetItem(f"  {icon}    {name}    ·  {count}")
+            item.setData(Qt.UserRole, name)
+            self._cat_list.addItem(item)
+        self._cat_list.setCurrentRow(0)
+        self._cat_list.setFixedHeight(220)
+        left_lay.addWidget(self._cat_list)
+        left_lay.addStretch(1)
+        main.addWidget(self._left_card)
+
+        # Center: log stream
+        center_wrap = QVBoxLayout()
+        center_wrap.setSpacing(8)
+
+        # scroll area for log entries
+        self._log_scroll = QScrollArea()
+        self._log_scroll.setWidgetResizable(True)
+        self._log_scroll.setFrameShape(QFrame.NoFrame)
+        self._log_scroll.setStyleSheet("background: transparent; border: none;")
+        self._log_container = QWidget()
+        self._log_container.setStyleSheet("background: transparent;")
+        self._log_lay = QVBoxLayout(self._log_container)
+        self._log_lay.setContentsMargins(0, 0, 4, 0)
+        self._log_lay.setSpacing(8)
+
+        # demo entries
+        demo_logs = [
+            ("12:04:31.042", "INFO", "Trading", "Order #4821 filled — BUY 0.10 XAUUSD @ 2034.12"),
+            ("12:04:29.881", "WARNING", "Risk", "Daily loss approaching 60% of limit — $298 / $500"),
+            ("12:03:15.102", "DEBUG", "System", "Heartbeat OK — latency 42ms"),
+            ("12:02:44.330", "ERROR", "Signals", "Signal rejected — spread too wide (4.2 pips)"),
+            ("12:01:08.550", "INFO", "Model", "Model inference completed — confidence 0.84"),
+        ]
+        for ts, lvl, cat, msg in demo_logs:
+            self._log_lay.addWidget(LogEntryFrame(ts, lvl, cat, msg, theme=self._theme))
+        self._log_lay.addStretch(1)
+        self._log_scroll.setWidget(self._log_container)
+        center_wrap.addWidget(self._log_scroll, 1)
 
         # Bottom toolbar
-        toolbar = QHBoxLayout()
-        self.level_combo = QComboBox()
-        self.level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
-        self.level_combo.setCurrentText("INFO")
-        toolbar.addWidget(QLabel("Change level:"))
-        toolbar.addWidget(self.level_combo)
-        self.btn_change_level = QPushButton("Apply Level")
-        self.btn_change_level.clicked.connect(self._on_change_level)
-        toolbar.addWidget(self.btn_change_level)
+        toolbar = QFrame()
+        toolbar.setObjectName("CardFrame")
+        tb_lay = QHBoxLayout(toolbar)
+        tb_lay.setContentsMargins(12, 8, 12, 8)
+        tb_lay.setSpacing(8)
+        for txt, obj in [("Clear", "GhostButton"), ("Export", "SecondaryButton"), ("Copy", "GhostButton")]:
+            b = QPushButton(txt)
+            b.setObjectName(obj)
+            b.setFixedHeight(32)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            tb_lay.addWidget(b)
+        tb_lay.addStretch(1)
+        self._auto_scroll = QCheckBox("Auto-scroll")
+        self._auto_scroll.setChecked(True)
+        tb_lay.addWidget(self._auto_scroll)
+        center_wrap.addWidget(toolbar)
+        main.addLayout(center_wrap, 1)
 
-        self.btn_debug = QPushButton("Debug mode (30 min)")
-        self.btn_debug.clicked.connect(self._on_debug_mode)
-        toolbar.addWidget(self.btn_debug)
+        # Right: filters card
+        self._right_card = QFrame()
+        self._right_card.setObjectName("CardFrame")
+        self._right_card.setFixedWidth(240)
+        right_lay = QVBoxLayout(self._right_card)
+        right_lay.setContentsMargins(16, 16, 16, 16)
+        right_lay.setSpacing(14)
+        rf_title = QLabel("FILTERS")
+        rf_title.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.text_tertiary}; letter-spacing: 0.08em; background: transparent; border: none;")
+        right_lay.addWidget(rf_title)
 
-        self.btn_export = QPushButton("Export current view")
-        self.btn_export.clicked.connect(self._on_export)
-        toolbar.addWidget(self.btn_export)
+        def _filter_row(label: str, widget: QWidget):
+            w = QWidget()
+            w.setStyleSheet("background: transparent; border: none;")
+            vlay = QVBoxLayout(w)
+            vlay.setContentsMargins(0, 0, 0, 0)
+            vlay.setSpacing(6)
+            lb = QLabel(label)
+            lb.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.text_secondary}; letter-spacing: 0.06em; background: transparent; border: none;")
+            vlay.addWidget(lb)
+            vlay.addWidget(widget)
+            return w
 
-        self.btn_open_folder = QPushButton("Open logs folder")
-        self.btn_open_folder.clicked.connect(self._on_open_folder)
-        toolbar.addWidget(self.btn_open_folder)
+        self._level_combo = QComboBox()
+        self._level_combo.addItems(["All levels", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+        right_lay.addWidget(_filter_row("LEVEL", self._level_combo))
 
-        self.status_label = QLabel("Logging: unknown")
-        toolbar.addWidget(self.status_label)
-        toolbar.addStretch()
-        center_layout.addLayout(toolbar)
+        self._cat_combo = QComboBox()
+        self._cat_combo.addItems(["All categories"] + [c[0] for c in CATEGORIES[1:]])
+        right_lay.addWidget(_filter_row("CATEGORY", self._cat_combo))
 
-        # Right panel: filters
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.addWidget(QLabel("Filters"))
-        self.level_filter_combo = QComboBox()
-        self.level_filter_combo.addItems(["ALL", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
-        self.level_filter_combo.currentTextChanged.connect(self._on_filter_changed)
-        right_layout.addWidget(QLabel("Level"))
-        right_layout.addWidget(self.level_filter_combo)
+        self._since_input = QLineEdit()
+        self._since_input.setPlaceholderText("e.g. 2024-01-01")
+        right_lay.addWidget(_filter_row("SINCE", self._since_input))
 
-        self.symbol_edit = QLineEdit()
-        self.symbol_edit.setPlaceholderText("symbol filter")
-        self.symbol_edit.textChanged.connect(self._on_filter_changed)
-        right_layout.addWidget(QLabel("Symbol"))
-        right_layout.addWidget(self.symbol_edit)
+        self._tail_check = QCheckBox("Tail mode (follow)")
+        self._tail_check.setChecked(True)
+        right_lay.addWidget(self._tail_check)
 
-        self.strategy_edit = QLineEdit()
-        self.strategy_edit.setPlaceholderText("strategy filter")
-        self.strategy_edit.textChanged.connect(self._on_filter_changed)
-        right_layout.addWidget(QLabel("Strategy"))
-        right_layout.addWidget(self.strategy_edit)
+        right_lay.addStretch(1)
+        apply_btn = QPushButton("Apply Filters")
+        apply_btn.setObjectName("PrimaryButton")
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        right_lay.addWidget(apply_btn)
 
-        self.time_combo = QComboBox()
-        self.time_combo.addItems(["all", "last hour", "last day", "last week"])
-        self.time_combo.currentTextChanged.connect(self._on_filter_changed)
-        right_layout.addWidget(QLabel("Time range"))
-        right_layout.addWidget(self.time_combo)
+        main.addWidget(self._right_card)
+        outer.addLayout(main, 1)
 
-        self.regex_edit = QLineEdit()
-        self.regex_edit.setPlaceholderText("regex search")
-        self.regex_edit.textChanged.connect(self._on_filter_changed)
-        right_layout.addWidget(QLabel("Regex"))
-        right_layout.addWidget(self.regex_edit)
+    def _apply_theme(self, theme: str):
+        self._theme = theme
+        p = get_palette(theme)
+        self.setStyleSheet(f"#PageRoot {{ background-color: {p.bg}; }}")
+        self._title.setStyleSheet(f"font-size: {FONT_SIZE.hero}px; font-weight: 700; color: {p.text}; letter-spacing: -0.03em; background: transparent; border: none;")
+        self._subtitle.setStyleSheet(f"font-size: {FONT_SIZE.body}px; color: {p.text_secondary}; background: transparent; border: none;")
+        for card in (self._left_card, self._right_card):
+            card.setStyleSheet(f"#CardFrame {{ background-color: {p.card}; border: 1px solid {p.border}; border-radius: {RADIUS.lg}px; }}")
 
-        right_layout.addStretch()
-        right.setMaximumWidth(220)
+    def set_theme(self, theme: str):
+        self._apply_theme(theme)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(left)
-        splitter.addWidget(center)
-        splitter.addWidget(right)
-        splitter.setSizes([180, 600, 220])
-        layout.addWidget(splitter)
-
-        # Timer for live tail
-        self._timer = QTimer(self)
-        self._timer.setInterval(500)
-        self._timer.timeout.connect(self._refresh_tail)
-        self._timer.start()
-
-        # Click handler for drawer
-        self.tail_edit.cursorPositionChanged.connect(self._on_cursor_changed)
-
-        self._refresh_tail()
-
-    def _on_category_changed(self, text: str) -> None:
-        self._current_category = text
-        self._refresh_tail()
-
-    def _on_filter_changed(self, *_: Any) -> None:
-        lvl = self.level_filter_combo.currentText()
-        self._level_filter = set() if lvl == "ALL" else {lvl}
-        self._symbol_filter = self.symbol_edit.text().strip()
-        self._strategy_filter = self.strategy_edit.text().strip()
-        self._time_range = self.time_combo.currentText()
-        self._regex_filter = self.regex_edit.text().strip()
-        self._refresh_tail()
-
-    def _on_change_level(self) -> None:
-        level = self.level_combo.currentText()
-        cat = self._current_category if self._current_category != "all" else "app"
-        try:
-            set_level(cat, level)
-            get_logger("ui").info(f"Changed level for {cat} to {level}")
-            QMessageBox.information(self, "Level changed", f"{cat} -> {level}")
-        except Exception as e:
-            QMessageBox.warning(self, "Error", str(e))
-
-    def _on_debug_mode(self) -> None:
-        try:
-            enable_debug_mode(30)
-            QMessageBox.information(self, "Debug mode", "Debug mode enabled for 30 minutes")
-        except Exception as e:
-            QMessageBox.warning(self, "Error", str(e))
-
-    def _on_export(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export logs", "exported_logs.txt", "Text Files (*.txt);;All Files (*)"
-        )
-        if not path:
-            return
-        try:
-            content = self.tail_edit.toPlainText()
-            Path(path).write_text(content, encoding="utf-8")
-            QMessageBox.information(self, "Exported", f"Exported to {path}")
-        except Exception as e:
-            QMessageBox.warning(self, "Error", str(e))
-
-    def _on_open_folder(self) -> None:
-        try:
-            log_dir = get_log_dir()
-        except Exception:
-            log_dir = Path("logs")
-        try:
-            if sys.platform == "win32":
-                subprocess.Popen(["explorer", str(log_dir)])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(log_dir)])
-            else:
-                subprocess.Popen(["xdg-open", str(log_dir)])
-        except Exception as e:
-            QMessageBox.warning(self, "Error", str(e))
-
-    def _refresh_tail(self) -> None:
-        try:
-            log_dir = get_log_dir()
-        except Exception:
-            log_dir = Path("logs")
-        lines: list[str] = []
-        try:
-            if self._current_category == "all":
-                p = log_dir / "all.log"
-                if p.exists():
-                    lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()[-200:]
-            else:
-                cat_dir = log_dir / self._current_category
-                if cat_dir.exists():
-                    # Find latest date file
-                    files = sorted(cat_dir.glob("*.jsonl"))
-                    if files:
-                        # Read last 200 lines from most recent file
-                        latest = files[-1]
-                        lines = latest.read_text(encoding="utf-8", errors="ignore").splitlines()[-200:]
-        except Exception:
-            lines = []
-
-        # Apply filters
-        filtered = self._apply_filters(lines)
-        self.tail_edit.setPlainText("\n".join(filtered))
-
-        # Status indicator: healthy if last log within 60s
-        healthy = False
-        try:
-            if lines:
-                # Try parse time from last line
-                last = lines[-1]
-                # For all.log, time is first field
-                # For jsonl, parse json
-                if last.strip().startswith("{"):
-                    try:
-                        obj = json.loads(last)
-                        t_str = obj.get("time", "")
-                        dt = datetime.fromisoformat(t_str.replace("Z", "+00:00"))
-                        healthy = (datetime.now(UTC) - dt).total_seconds() < 60
-                    except Exception:
-                        healthy = True
-                else:
-                    healthy = True
-            self.status_label.setText("Logging: healthy" if healthy else "Logging: stale")
-            self.status_label.setStyleSheet("color: green;" if healthy else "color: orange;")
-        except Exception:
-            pass
-
-    def _apply_filters(self, lines: list[str]) -> list[str]:
-        out: list[str] = []
-        # Time range cutoff
-        cutoff: datetime | None = None
-        now = datetime.now(UTC)
-        if self._time_range == "last hour":
-            cutoff = now - timedelta(hours=1)
-        elif self._time_range == "last day":
-            cutoff = now - timedelta(days=1)
-        elif self._time_range == "last week":
-            cutoff = now - timedelta(days=7)
-
-        regex: re.Pattern[str] | None = None
-        if self._regex_filter:
-            try:
-                regex = re.compile(self._regex_filter)
-            except re.error:
-                regex = None
-
-        for line in lines:
-            # Level filter
-            if self._level_filter:
-                # Check if level in line
-                if not any(lvl in line for lvl in self._level_filter):
-                    # For jsonl, check json level field
-                    try:
-                        obj = json.loads(line)
-                        if obj.get("level") not in self._level_filter:
-                            continue
-                    except Exception:
-                        continue
-            # Symbol filter
-            if self._symbol_filter and self._symbol_filter.lower() not in line.lower():
-                continue
-            if self._strategy_filter and self._strategy_filter.lower() not in line.lower():
-                continue
-            if regex and not regex.search(line):
-                continue
-            if cutoff:
-                try:
-                    if line.strip().startswith("{"):
-                        obj = json.loads(line)
-                        t_str = obj.get("time", "")
-                        dt = datetime.fromisoformat(t_str.replace("Z", "+00:00"))
-                        if dt < cutoff:
-                            continue
-                    else:
-                        # Parse time from all.log: 2025-09-27T11:11:35.123Z
-                        t_str = line.split("|")[0].strip()
-                        dt = datetime.fromisoformat(t_str.replace("Z", "+00:00"))
-                        if dt < cutoff:
-                            continue
-                except Exception:
-                    pass
-            out.append(line)
-        return out
-
-    def _on_cursor_changed(self) -> None:
-        # Show drawer with full JSON when line clicked
-        cursor = self.tail_edit.textCursor()
-        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-        line = cursor.selectedText().strip()
-        if not line:
-            return
-        if line.startswith("{"):
-            try:
-                obj = json.loads(line)
-                QMessageBox.information(self, "Log entry", json.dumps(obj, indent=2, ensure_ascii=False))
-                # Show in tooltip or message box for now
-                # Use a simple dialog
-                # Avoid spamming: only show on click, not cursor move
-                pass
-            except Exception:
-                pass
+    def add_log_entry(self, timestamp: str, level: str, category: str, message: str):
+        # insert at top
+        w = LogEntryFrame(timestamp, level, category, message, theme=self._theme)
+        self._log_lay.insertWidget(0, w)

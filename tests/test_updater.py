@@ -102,9 +102,7 @@ def test_release_feed_uses_correct_url(monkeypatch: pytest.MonkeyPatch) -> None:
     latest_json_payload = {
         "version": "0.2.0",
         "notes_url": "https://github.com/mohmdstag7-cmd/Tr/releases/tag/v0.2.0",
-        "installer_url": (
-            "https://github.com/mohmdstag7-cmd/Tr/releases/download/v0.2.0/" "MT5TradingWorkstation-Setup-0.2.0.exe"
-        ),
+        "installer_url": ("https://github.com/mohmdstag7-cmd/Tr/releases/download/v0.2.0/" "MT5TradingWorkstation-Setup-0.2.0.exe"),
         "installer_sha256": "a" * 64,
         "published_at": "2025-01-01T00:00:00Z",
         "is_breaking": False,

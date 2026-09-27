@@ -364,9 +364,7 @@ def _check_supabase() -> HealthCheck:
         except Exception:
             url = None
     if not url:
-        return HealthCheck(
-            name="supabase_reachable", status="unknown", message="No Supabase URL configured", last_checked=now
-        )
+        return HealthCheck(name="supabase_reachable", status="unknown", message="No Supabase URL configured", last_checked=now)
     try:
         import urllib.request
 
@@ -374,12 +372,8 @@ def _check_supabase() -> HealthCheck:
         with urllib.request.urlopen(req, timeout=5) as resp:
             code = resp.getcode()
             if 200 <= code < 400:
-                return HealthCheck(
-                    name="supabase_reachable", status="ok", message=f"Reachable ({code})", value=code, last_checked=now
-                )
-            return HealthCheck(
-                name="supabase_reachable", status="error", message=f"HTTP {code}", value=code, last_checked=now
-            )
+                return HealthCheck(name="supabase_reachable", status="ok", message=f"Reachable ({code})", value=code, last_checked=now)
+            return HealthCheck(name="supabase_reachable", status="error", message=f"HTTP {code}", value=code, last_checked=now)
     except Exception as e:
         return HealthCheck(name="supabase_reachable", status="error", message=f"Unreachable: {e}", last_checked=now)
 
@@ -415,9 +409,7 @@ def _check_disk_space() -> HealthCheck:
                 value=free_mb,
                 last_checked=now,
             )
-        return HealthCheck(
-            name="disk_space", status="ok", message=f"{free_gb:.2f}GB free", value=free_mb, last_checked=now
-        )
+        return HealthCheck(name="disk_space", status="ok", message=f"{free_gb:.2f}GB free", value=free_mb, last_checked=now)
     except ImportError:
         return HealthCheck(name="disk_space", status="unknown", message="psutil not installed", last_checked=now)
     except Exception as e:
@@ -488,9 +480,7 @@ def _check_internet_latency() -> HealthCheck:
                 value=rtt_ms,
                 last_checked=now,
             )
-        return HealthCheck(
-            name="internet_latency", status="ok", message=f"{rtt_ms:.0f}ms", value=rtt_ms, last_checked=now
-        )
+        return HealthCheck(name="internet_latency", status="ok", message=f"{rtt_ms:.0f}ms", value=rtt_ms, last_checked=now)
     except Exception as e:
         return HealthCheck(name="internet_latency", status="error", message=f"Failed: {e}", last_checked=now)
 
@@ -507,9 +497,7 @@ def _check_clock_drift() -> HealthCheck:
             data = _json.loads(resp.read().decode("utf-8"))
             remote_str = data.get("utc_datetime") or data.get("datetime")
             if not remote_str:
-                return HealthCheck(
-                    name="pc_clock_drift", status="unknown", message="No time in response", last_checked=now
-                )
+                return HealthCheck(name="pc_clock_drift", status="unknown", message="No time in response", last_checked=now)
             try:
                 remote = datetime.fromisoformat(remote_str.replace("Z", "+00:00"))
                 if remote.tzinfo is None:
@@ -531,9 +519,7 @@ def _check_clock_drift() -> HealthCheck:
                         value=drift,
                         last_checked=now,
                     )
-                return HealthCheck(
-                    name="pc_clock_drift", status="ok", message=f"Drift {drift:.1f}s", value=drift, last_checked=now
-                )
+                return HealthCheck(name="pc_clock_drift", status="ok", message=f"Drift {drift:.1f}s", value=drift, last_checked=now)
             except Exception as e:
                 return HealthCheck(name="pc_clock_drift", status="unknown", message=str(e), last_checked=now)
     except Exception as e:

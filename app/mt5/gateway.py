@@ -329,9 +329,7 @@ class MT5Gateway(QObject):
             return
         logger.info("Attempting auto-reconnect")
         try:
-            fut = self.initialize(
-                self._saved_path, self._saved_login, self._saved_password or "", self._saved_server or ""
-            )
+            fut = self.initialize(self._saved_path, self._saved_login, self._saved_password or "", self._saved_server or "")
             ok = fut.result(timeout=35)
             if ok:
                 logger.info("Auto-reconnect succeeded")
@@ -371,9 +369,7 @@ class MT5Gateway(QObject):
         return fut
 
     # public API
-    def initialize(
-        self, path: str | None, login: int, password: str, server: str, timeout: int = 60000
-    ) -> concurrent.futures.Future[bool]:
+    def initialize(self, path: str | None, login: int, password: str, server: str, timeout: int = 60000) -> concurrent.futures.Future[bool]:
         self._set_state("connecting")
         self._saved_path = path
         self._saved_login = login
@@ -414,9 +410,7 @@ class MT5Gateway(QObject):
     def symbol_info_tick(self, symbol: str) -> concurrent.futures.Future[Tick | None]:
         return self._submit("symbol_info_tick", symbol, timeout=5.0)
 
-    def copy_rates_from_pos(
-        self, symbol: str, timeframe: str, start: int, count: int
-    ) -> concurrent.futures.Future[list[Bar]]:
+    def copy_rates_from_pos(self, symbol: str, timeframe: str, start: int, count: int) -> concurrent.futures.Future[list[Bar]]:
         return self._submit("copy_rates_from_pos", symbol, timeframe, start, count, timeout=60.0)
 
     def orders_get(self, **kwargs: Any) -> concurrent.futures.Future[list[Order]]:

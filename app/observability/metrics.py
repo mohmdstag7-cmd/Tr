@@ -169,9 +169,7 @@ class PerformanceMetrics(QObject):
             if snap["ram_mb"] > 500:
                 logger.bind(category="perf").warning(f"RAM budget exceeded: {snap['ram_mb']:.0f}MB > 500MB")
             if snap["bar_latency"]["p95"] > 1:
-                logger.bind(category="perf").warning(
-                    f"bar_latency p95 exceeded: {snap['bar_latency']['p95']:.3f}s > 1s"
-                )
+                logger.bind(category="perf").warning(f"bar_latency p95 exceeded: {snap['bar_latency']['p95']:.3f}s > 1s")
             for qname, size in snap["queue_sizes"].items():
                 if size > 100:
                     logger.bind(category="perf").warning(f"Queue {qname} size {size} > 100")

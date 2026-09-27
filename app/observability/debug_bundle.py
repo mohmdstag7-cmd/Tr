@@ -106,9 +106,7 @@ def create_debug_bundle(output_path: Path | None = None) -> Path:
         if crash_dir.exists():
             for p in crash_dir.glob("*.json"):
                 try:
-                    arcname = (
-                        str(p.relative_to(Path.cwd())) if p.is_relative_to(Path.cwd()) else f"crash_reports/{p.name}"
-                    )
+                    arcname = str(p.relative_to(Path.cwd())) if p.is_relative_to(Path.cwd()) else f"crash_reports/{p.name}"
                     zf.write(p, arcname)
                 except Exception:
                     pass
@@ -162,10 +160,7 @@ def create_debug_bundle(output_path: Path | None = None) -> Path:
             for t in traces:
                 data = {
                     "signal_id": t.signal_id,
-                    "steps": [
-                        {"name": s.name, "value": s.value, "threshold": s.threshold, "passed": s.passed, "ms": s.ms}
-                        for s in t.steps
-                    ],
+                    "steps": [{"name": s.name, "value": s.value, "threshold": s.threshold, "passed": s.passed, "ms": s.ms} for s in t.steps],
                     "final_decision": t.final_decision,
                     "created_at": t.created_at.isoformat(),
                 }

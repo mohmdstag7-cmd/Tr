@@ -94,9 +94,7 @@ class ConnectionWizardDialog(QDialog):
         layout.addLayout(self.checklist_layout)
 
         self.investor_banner = QLabel("Investor password detected — Analysis-only mode enabled")
-        self.investor_banner.setStyleSheet(
-            "background: #fff3cd; color: #856404; padding: 6px; border: 1px solid #ffeaa7;"
-        )
+        self.investor_banner.setStyleSheet("background: #fff3cd; color: #856404; padding: 6px; border: 1px solid #ffeaa7;")
         self.investor_banner.setVisible(False)
         layout.addWidget(self.investor_banner)
 

@@ -217,13 +217,9 @@ class ProbabilityRing(QWidget):
         ring_color = self._ring_color()
 
         self._percent_label.setStyleSheet(f"color: {text_primary}; background: transparent; border: none;")
-        self._detail_label.setStyleSheet(
-            f"color: {text_secondary}; font-size: 11px; background: transparent; border: none;"
-        )
+        self._detail_label.setStyleSheet(f"color: {text_secondary}; font-size: 11px; background: transparent; border: none;")
         # Confidence label uses ring color but always paired with icon+text
-        self._confidence_label.setStyleSheet(
-            f"color: {ring_color}; font-size: 11px; font-weight: 600; background: transparent; border: none;"
-        )
+        self._confidence_label.setStyleSheet(f"color: {ring_color}; font-size: 11px; font-weight: 600; background: transparent; border: none;")
         self.update()
 
     def set_tokens(self, tokens: Any) -> None:

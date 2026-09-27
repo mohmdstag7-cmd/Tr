@@ -91,14 +91,9 @@ class ReleaseFeed:
                         return self._parse_update_info(data)
                     log.warning(f"latest.json not found on release {tag_name} (HTTP {resp.status_code})")
             elif resp.status_code == 403:
-                log.warning(
-                    "GitHub API rate limit exceeded (HTTP 403). Falling back to " "direct version-probe strategy."
-                )
+                log.warning("GitHub API rate limit exceeded (HTTP 403). Falling back to " "direct version-probe strategy.")
             elif resp.status_code == 404:
-                raise ReleaseFeedError(
-                    "No GitHub Release found. The first release must be created "
-                    "before the in-app updater can check for updates."
-                )
+                raise ReleaseFeedError("No GitHub Release found. The first release must be created " "before the in-app updater can check for updates.")
             else:
                 log.warning(f"GitHub API returned HTTP {resp.status_code}, trying fallback strategy.")
         except httpx.RequestError as exc:
@@ -177,10 +172,7 @@ class ReleaseFeed:
             except Exception:
                 continue
 
-        raise ReleaseFeedError(
-            "Could not fetch latest.json via API (rate-limited) or fallback probe. "
-            "Try again later, or check your network connection."
-        )
+        raise ReleaseFeedError("Could not fetch latest.json via API (rate-limited) or fallback probe. " "Try again later, or check your network connection.")
 
     # ----------------------------------------------------------------- async
     async def fetch_latest(self) -> UpdateInfo:
@@ -205,10 +197,7 @@ class ReleaseFeed:
                         if resp.status_code == 200:
                             return self._parse_update_info(resp.json())
                 elif resp.status_code == 404:
-                    raise ReleaseFeedError(
-                        "No GitHub Release found. The first release must be created "
-                        "before the in-app updater can check for updates."
-                    )
+                    raise ReleaseFeedError("No GitHub Release found. The first release must be created " "before the in-app updater can check for updates.")
                 elif resp.status_code == 403:
                     log.warning("GitHub API rate limited (403). Falling back to version-probe.")
                 else:

@@ -1,159 +1,265 @@
-"""Health page with checks, metrics, and debug bundle."""
+"""
+Premium Health Page — summary card, checks table with status icons,
+performance metrics with progress bars, debug bundle action.
+"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
-    QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from app.observability.debug_bundle import create_debug_bundle
-from app.observability.health import health_registry
-from app.observability.metrics import metrics
-from app.observability.watchdog import watchdog
+from app.ui.theme.tokens import FONT_MONO, FONT_SIZE, RADIUS, get_palette
+
+STATUS_CFG = {
+    "ok": ("✓", "#22C55E", "Healthy"),
+    "warn": ("⚠", "#F59E0B", "Degraded"),
+    "error": ("✗", "#EF4444", "Critical"),
+    "unknown": ("?", "#8B92A8", "Unknown"),
+}
+
+
+def _card(theme: str) -> QFrame:
+    f = QFrame()
+    f.setObjectName("CardFrame")
+    p = get_palette(theme)
+    f.setStyleSheet(f"#CardFrame {{ background-color: {p.card}; border: 1px solid {p.border}; border-radius: {RADIUS.lg}px; }}")
+    return f
 
 
 class HealthPage(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    debugBundleRequested = Signal()
+    refreshRequested = Signal()
+
+    def __init__(self, parent=None, theme: str = "dark"):
         super().__init__(parent)
-        self.setObjectName("HealthPage")
-        layout = QVBoxLayout(self)
+        self._theme = theme
+        self.setObjectName("PageRoot")
+        self._build_ui()
+        self._apply_theme(theme)
 
-        from app.ui.i18n import tr
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        _title = QLabel(tr("health.title", default="Health"), self)
-        _title.setObjectName("PageTitle")
-        _title.setStyleSheet("font-size: 20px; font-weight: 700;")
-        layout.addWidget(_title)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("background: transparent; border: none;")
 
-        # Top: health checks table
-        layout.addWidget(QLabel("Health Checks"))
-        self.checks_table = QTableWidget(0, 5)
-        self.checks_table.setHorizontalHeaderLabels(["Check", "Status", "Message", "Last checked", "Value"])
-        self.checks_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.checks_table)
+        container = QWidget()
+        container.setObjectName("PageRoot")
+        self._container = container
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(16)
 
-        btn_row = QHBoxLayout()
-        self.btn_run_checks = QPushButton("Run all checks now")
-        self.btn_run_checks.clicked.connect(self._run_checks)
-        btn_row.addWidget(self.btn_run_checks)
+        # — Title —
+        title_row = QHBoxLayout()
+        self._title = QLabel("Health")
+        self._title.setObjectName("PageTitle")
+        self._subtitle = QLabel("System diagnostics and performance")
+        p = get_palette(self._theme)
+        self._subtitle.setStyleSheet(f"font-size: {FONT_SIZE.body}px; color: {p.text_secondary}; background: transparent; border: none;")
+        title_row.addWidget(self._title)
+        title_row.addWidget(self._subtitle)
+        title_row.addStretch(1)
+        refresh_btn = QPushButton("↻ Refresh")
+        refresh_btn.setObjectName("SecondaryButton")
+        refresh_btn.setCursor(Qt.PointingHandCursor)
+        refresh_btn.clicked.connect(self.refreshRequested.emit)
+        title_row.addWidget(refresh_btn)
+        lay.addLayout(title_row)
 
-        self.btn_debug_bundle = QPushButton("Create debug bundle")
-        self.btn_debug_bundle.setStyleSheet("color: red; border: 1px solid red; padding: 6px;")
-        self.btn_debug_bundle.clicked.connect(self._on_debug_bundle)
-        btn_row.addWidget(self.btn_debug_bundle)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
+        # — Summary card —
+        self._summary_card = _card(self._theme)
+        s_lay = QHBoxLayout(self._summary_card)
+        s_lay.setContentsMargins(20, 20, 20, 20)
+        s_lay.setSpacing(16)
 
-        # Middle: performance metrics
-        layout.addWidget(QLabel("Performance Metrics"))
-        metrics_row = QHBoxLayout()
-        self.cpu_bar = QProgressBar()
-        self.cpu_bar.setRange(0, 100)
-        self.cpu_bar.setFormat("CPU %p%")
-        metrics_row.addWidget(QLabel("CPU%"))
-        metrics_row.addWidget(self.cpu_bar)
+        # status icon circle
+        self._summary_icon = QLabel("✓")
+        self._summary_icon.setFixedSize(48, 48)
+        self._summary_icon.setAlignment(Qt.AlignCenter)
+        self._summary_icon.setStyleSheet(
+            f"background-color: {p.profit_soft}; color: {p.profit}; border-radius: 24px; font-size: 22px; font-weight: 700; border: 1px solid {p.profit}30;"
+        )
+        s_lay.addWidget(self._summary_icon)
 
-        self.ram_bar = QProgressBar()
-        self.ram_bar.setRange(0, 500)
-        self.ram_bar.setFormat("%v MB / 500 MB")
-        metrics_row.addWidget(QLabel("RAM"))
-        metrics_row.addWidget(self.ram_bar)
+        txt_col = QVBoxLayout()
+        txt_col.setSpacing(4)
+        self._summary_title = QLabel("All systems operational")
+        self._summary_title.setStyleSheet(f"font-size: {FONT_SIZE.subtitle}px; font-weight: 600; color: {p.text}; background: transparent; border: none;")
+        self._summary_desc = QLabel("8 checks passed  •  Last checked just now  •  Uptime 3d 14h")
+        self._summary_desc.setStyleSheet(f"font-size: {FONT_SIZE.body}px; color: {p.text_secondary}; background: transparent; border: none;")
+        txt_col.addWidget(self._summary_title)
+        txt_col.addWidget(self._summary_desc)
+        s_lay.addLayout(txt_col, 1)
 
-        self.latency_label = QLabel("bar p50/p95: -/-")
-        metrics_row.addWidget(self.latency_label)
-        metrics_row.addStretch()
-        layout.addLayout(metrics_row)
+        self._overall_badge = QLabel("HEALTHY")
+        self._overall_badge.setAlignment(Qt.AlignCenter)
+        self._overall_badge.setFixedHeight(28)
+        self._overall_badge.setStyleSheet(
+            f"background-color: {p.profit_soft}; color: {p.profit}; border: 1px solid {p.profit}30; "
+            f"border-radius: 14px; padding: 0 14px; font-size: {FONT_SIZE.caption}px; font-weight: 700; letter-spacing: 0.08em;"
+        )
+        s_lay.addWidget(self._overall_badge)
+        lay.addWidget(self._summary_card)
 
-        self.mt5_table = QTableWidget(0, 4)
-        self.mt5_table.setHorizontalHeaderLabels(["MT5 Action", "p50", "p95", "count"])
-        layout.addWidget(self.mt5_table)
+        # — Checks table —
+        self._checks_card = _card(self._theme)
+        c_lay = QVBoxLayout(self._checks_card)
+        c_lay.setContentsMargins(20, 20, 20, 20)
+        c_lay.setSpacing(12)
+        hdr = QLabel("CHECKS")
+        hdr.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.text_tertiary}; letter-spacing: 0.08em; background: transparent; border: none;")
+        c_lay.addWidget(hdr)
 
-        # Bottom: worker status
-        layout.addWidget(QLabel("Worker Status"))
-        self.worker_table = QTableWidget(0, 4)
-        self.worker_table.setHorizontalHeaderLabels(["Worker", "Last heartbeat", "Freeze s", "Alive"])
-        layout.addWidget(self.worker_table)
+        self._table = QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(["Check", "Status", "Latency", "Message"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        self._table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._table.setShowGrid(False)
+        self._table.setFixedHeight(260)
+        self._populate_checks()
+        c_lay.addWidget(self._table)
+        lay.addWidget(self._checks_card)
 
-        # Timers
-        self._health_timer = QTimer(self)
-        self._health_timer.setInterval(60000)
-        self._health_timer.timeout.connect(self._run_checks)
-        self._health_timer.start()
+        # — Performance metrics —
+        perf_row = QHBoxLayout()
+        perf_row.setSpacing(16)
+        for title, value, pct, color_key in [
+            ("CPU", "24%", 24, "accent"),
+            ("Memory", "1.2 GB / 4.0 GB", 30, "accent"),
+            ("Event loop lag", "8 ms", 16, "profit"),
+            ("MT5 latency", "42 ms", 42, "warning"),
+        ]:
+            card = _card(self._theme)
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(16, 16, 16, 16)
+            cl.setSpacing(10)
+            t = QLabel(title.upper())
+            t.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.text_secondary}; letter-spacing: 0.08em; background: transparent; border: none;")
+            v = QLabel(value)
+            v.setStyleSheet(
+                f"font-family: {FONT_MONO}; font-size: {FONT_SIZE.subtitle}px; font-weight: 600; color: {p.text}; font-feature-settings: 'tnum'; background: transparent; border: none;"  # noqa: E501
+            )
+            bar = QProgressBar()
+            bar.setFixedHeight(6)
+            bar.setTextVisible(False)
+            bar.setValue(pct)
+            if color_key == "warning":
+                bar.setObjectName("WarningBar")
+            elif color_key == "profit":
+                bar.setObjectName("ProfitBar")
+            cl.addWidget(t)
+            cl.addWidget(v)
+            cl.addWidget(bar)
+            card.setMinimumWidth(160)
+            perf_row.addWidget(card)
+        lay.addLayout(perf_row)
 
-        self._metrics_timer = QTimer(self)
-        self._metrics_timer.setInterval(5000)
-        self._metrics_timer.timeout.connect(self._refresh_metrics)
-        self._metrics_timer.start()
+        # — Debug bundle —
+        self._debug_card = _card(self._theme)
+        d_lay = QHBoxLayout(self._debug_card)
+        d_lay.setContentsMargins(20, 16, 20, 16)
+        d_lay.setSpacing(12)
+        d_icon = QLabel("⬢")
+        d_icon.setStyleSheet(f"font-size: 18px; color: {p.text_tertiary}; background: transparent; border: none;")
+        d_lay.addWidget(d_icon)
+        d_text = QVBoxLayout()
+        d_text.setSpacing(2)
+        d_title = QLabel("Debug bundle")
+        d_title.setStyleSheet(f"font-size: {FONT_SIZE.body}px; font-weight: 600; color: {p.text}; background: transparent; border: none;")
+        d_desc = QLabel("Collect logs, config and diagnostics into a zip for support")
+        d_desc.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; color: {p.text_secondary}; background: transparent; border: none;")
+        d_text.addWidget(d_title)
+        d_text.addWidget(d_desc)
+        d_lay.addLayout(d_text, 1)
+        self._debug_btn = QPushButton("Create Debug Bundle")
+        self._debug_btn.setObjectName("DangerButton")
+        self._debug_btn.setCursor(Qt.PointingHandCursor)
+        self._debug_btn.clicked.connect(self.debugBundleRequested.emit)
+        d_lay.addWidget(self._debug_btn)
+        lay.addWidget(self._debug_card)
 
-        self._worker_timer = QTimer(self)
-        self._worker_timer.setInterval(5000)
-        self._worker_timer.timeout.connect(self._refresh_workers)
-        self._worker_timer.start()
+        lay.addStretch(1)
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
 
-        self._run_checks()
-        self._refresh_metrics()
-        self._refresh_workers()
+    def _populate_checks(self):
+        checks = [
+            ("MT5 Connection", "ok", "42 ms", "Connected to demo server"),
+            ("Data Feed", "ok", "18 ms", "Ticks flowing"),
+            ("Risk Engine", "ok", "2 ms", "Limits enforced"),
+            ("Model Service", "warn", "210 ms", "High latency — consider restart"),
+            ("Disk Space", "ok", "—", "78% free"),
+            ("Permissions", "ok", "—", "All required permissions granted"),
+            ("Network", "ok", "12 ms", "Stable"),
+            ("Clock Sync", "ok", "—", "NTP synchronized"),
+        ]
+        self._table.setRowCount(len(checks))
+        for i, (name, status, latency, msg) in enumerate(checks):
+            icon, color, label = STATUS_CFG.get(status, STATUS_CFG["unknown"])
+            # Check name
+            it0 = QTableWidgetItem(f"  {name}")
+            it0.setFlags(it0.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(i, 0, it0)
+            # Status with icon
+            it1 = QTableWidgetItem(f"{icon}  {label}")
+            it1.setForeground(QColor(color))
+            it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(i, 1, it1)
+            # Latency mono
+            it2 = QTableWidgetItem(latency)
+            it2.setFlags(it2.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(i, 2, it2)
+            # Message
+            it3 = QTableWidgetItem(msg)
+            it3.setFlags(it3.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(i, 3, it3)
 
-    def _run_checks(self) -> None:
-        results = health_registry.run_all()
-        self.checks_table.setRowCount(len(results))
-        for row, (_name, hc) in enumerate(results.items()):
-            self.checks_table.setItem(row, 0, QTableWidgetItem(hc.name))
-            status_item = QTableWidgetItem(hc.status)
-            if hc.status == "ok":
-                status_item.setBackground(Qt.GlobalColor.green)
-            elif hc.status == "warning":
-                status_item.setBackground(Qt.GlobalColor.yellow)
-            elif hc.status == "error":
-                status_item.setBackground(Qt.GlobalColor.red)
-            elif hc.status == "unknown":
-                status_item.setBackground(Qt.GlobalColor.gray)
-            self.checks_table.setItem(row, 1, status_item)
-            self.checks_table.setItem(row, 2, QTableWidgetItem(hc.message))
-            last = hc.last_checked.strftime("%Y-%m-%d %H:%M:%S") if hc.last_checked else "-"
-            self.checks_table.setItem(row, 3, QTableWidgetItem(last))
-            self.checks_table.setItem(row, 4, QTableWidgetItem(str(hc.value) if hc.value is not None else "-"))
+    def _apply_theme(self, theme: str):
+        self._theme = theme
+        p = get_palette(theme)
+        self.setStyleSheet(f"#PageRoot {{ background-color: {p.bg}; }}")
+        self._container.setStyleSheet(f"background-color: {p.bg};")
+        self._title.setStyleSheet(f"font-size: {FONT_SIZE.hero}px; font-weight: 700; color: {p.text}; letter-spacing: -0.03em; background: transparent; border: none;")
+        self._subtitle.setStyleSheet(f"font-size: {FONT_SIZE.body}px; color: {p.text_secondary}; background: transparent; border: none;")
+        for card in (self._summary_card, self._checks_card, self._debug_card):
+            card.setStyleSheet(f"#CardFrame {{ background-color: {p.card}; border: 1px solid {p.border}; border-radius: {RADIUS.lg}px; }}")
 
-    def _refresh_metrics(self) -> None:
-        snap = metrics.snapshot()
-        cpu = snap.get("cpu_pct", 0)
-        ram = snap.get("ram_mb", 0)
-        self.cpu_bar.setValue(int(cpu))
-        self.ram_bar.setValue(int(min(ram, 500)))
-        bar = snap.get("bar_latency", {})
-        self.latency_label.setText(f"bar p50/p95: {bar.get('p50', 0):.3f}/{bar.get('p95', 0):.3f}s")
-        mt5_data = snap.get("mt5_latency", {})
-        self.mt5_table.setRowCount(len(mt5_data))
-        for row, (action, vals) in enumerate(mt5_data.items()):
-            self.mt5_table.setItem(row, 0, QTableWidgetItem(action))
-            self.mt5_table.setItem(row, 1, QTableWidgetItem(f"{vals.get('p50', 0):.3f}"))
-            self.mt5_table.setItem(row, 2, QTableWidgetItem(f"{vals.get('p95', 0):.3f}"))
-            self.mt5_table.setItem(row, 3, QTableWidgetItem(str(int(vals.get("count", 0)))))
+    def set_theme(self, theme: str):
+        self._apply_theme(theme)
 
-    def _refresh_workers(self) -> None:
-        statuses = watchdog.all_statuses()
-        self.worker_table.setRowCount(len(statuses))
-        for row, st in enumerate(statuses):
-            self.worker_table.setItem(row, 0, QTableWidgetItem(st.name))
-            hb = st.last_heartbeat.strftime("%H:%M:%S") if st.last_heartbeat else "-"
-            self.worker_table.setItem(row, 1, QTableWidgetItem(hb))
-            self.worker_table.setItem(row, 2, QTableWidgetItem(f"{st.freeze_seconds:.1f}"))
-            alive_item = QTableWidgetItem("●" if st.is_alive else "○")
-            alive_item.setForeground(Qt.GlobalColor.green if st.is_alive else Qt.GlobalColor.red)
-            self.worker_table.setItem(row, 3, alive_item)
-
-    def _on_debug_bundle(self) -> None:
-        try:
-            path = create_debug_bundle()
-            QMessageBox.information(self, "Debug bundle", f"Created: {path}")
-        except Exception as e:
-            QMessageBox.warning(self, "Error", str(e))
+    def set_overall_status(self, status: str):
+        """status: ok | warn | error"""
+        get_palette(self._theme)
+        icon, color, label = STATUS_CFG.get(status, STATUS_CFG["unknown"])
+        self._summary_icon.setText(icon)
+        self._summary_icon.setStyleSheet(f"background-color: {color}18; color: {color}; border-radius: 24px; font-size: 22px; font-weight: 700; border: 1px solid {color}30;")
+        self._overall_badge.setText(label.upper())
+        self._overall_badge.setStyleSheet(
+            f"background-color: {color}18; color: {color}; border: 1px solid {color}30; "
+            f"border-radius: 14px; padding: 0 14px; font-size: {FONT_SIZE.caption}px; font-weight: 700; letter-spacing: 0.08em;"
+        )

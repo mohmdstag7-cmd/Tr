@@ -65,11 +65,7 @@ def _make_json_sink(log_dir: Path, category: str):  # type: ignore[no-untyped-de
                 exc_str = str(exc)
 
         # Build extra without context keys
-        extra_filtered = {
-            k: v
-            for k, v in record["extra"].items()
-            if k not in {"category", "session_id", "trace_id", "signal_id", "trade_id", "ticket", "symbol"}
-        }
+        extra_filtered = {k: v for k, v in record["extra"].items() if k not in {"category", "session_id", "trace_id", "signal_id", "trade_id", "ticket", "symbol"}}
 
         json_record: dict[str, Any] = {
             "time": time_str,
@@ -114,10 +110,7 @@ def _make_all_sink(log_dir: Path):  # type: ignore[no-untyped-def]
         level = record["level"].name
         category = record["extra"].get("category", "app")
         msg = record["message"]
-        line = (
-            f"{time_str} | {level:<8} | {category:<12} | "
-            f"{record['name']}:{record['function']}:{record['line']} - {msg}\n"
-        )
+        line = f"{time_str} | {level:<8} | {category:<12} | " f"{record['name']}:{record['function']}:{record['line']} - {msg}\n"
         if record.get("exception") is not None:
             try:
                 exc_type, exc_val, exc_tb = record["exception"]

@@ -67,12 +67,7 @@ class SemVer(BaseModel):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SemVer):
             return NotImplemented  # type: ignore[return-value]
-        return (
-            self.major == other.major
-            and self.minor == other.minor
-            and self.patch == other.patch
-            and self.prerelease == other.prerelease
-        )
+        return self.major == other.major and self.minor == other.minor and self.patch == other.patch and self.prerelease == other.prerelease
 
     def __hash__(self) -> int:  # type: ignore[override]
         return hash((self.major, self.minor, self.patch, self.prerelease))

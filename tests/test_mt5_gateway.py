@@ -87,9 +87,7 @@ def test_gateway_reconnect_on_disconnect(mt5_gateway_with_fake, fake_mt5, qtbot)
         gw._on_heartbeat()  # type: ignore[attr-defined]
 
 
-@pytest.mark.skip(
-    reason="Hangs in CI due to fake MT5 sleep on symbol_info_tick used by detect_broker_utc_offset during initialize"
-)
+@pytest.mark.skip(reason="Hangs in CI due to fake MT5 sleep on symbol_info_tick used by detect_broker_utc_offset during initialize")
 def test_gateway_timeout_on_hung_call(monkeypatch, qtbot):  # type: ignore[no-untyped-def]
     """When the MT5 call hangs beyond the gateway's per-call timeout, the future raises.
 

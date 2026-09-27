@@ -1,240 +1,247 @@
-"""Status bar widget — Phase 1."""
+"""
+Premium Status Bar — 32px, connection dot with pulse, pill badges,
+tabular numbers, vertical dividers, kill switch.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime
+from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
 
-from PySide6.QtCore import Signal, Slot
-from PySide6.QtWidgets import (
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QProgressBar,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from app.ui.theme.tokens import FONT_MONO, FONT_SIZE, get_palette
 
-from app.ui.i18n import tr
-from app.ui.theme.tokens import get_tokens
-from app.ui.widgets import Badge
+
+class DotIndicator(QFrame):
+    """8px circle dot. Pulse animation when connecting."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(10, 10)
+        self._color = "#22C55E"
+        self._opacity = 1.0
+        self._pulse_anim = None
+
+    def set_color(self, color: str):
+        self._color = color
+        self.update()
+
+    def set_opacity(self, v: float):
+        self._opacity = v
+        self.update()
+
+    def get_opacity(self) -> float:
+        return self._opacity
+
+    opacity = Property(float, get_opacity, set_opacity)
+
+    def start_pulse(self):
+        if self._pulse_anim and self._pulse_anim.state() == QPropertyAnimation.Running:
+            return
+        self._pulse_anim = QPropertyAnimation(self, b"opacity")
+        self._pulse_anim.setDuration(900)
+        self._pulse_anim.setLoopCount(-1)
+        self._pulse_anim.setStartValue(1.0)
+        self._pulse_anim.setKeyValueAt(0.5, 0.25)
+        self._pulse_anim.setEndValue(1.0)
+        self._pulse_anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._pulse_anim.start()
+
+    def stop_pulse(self):
+        if self._pulse_anim:
+            self._pulse_anim.stop()
+        self._opacity = 1.0
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        c = QColor(self._color)
+        c.setAlphaF(self._opacity)
+        p.setBrush(c)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(1, 1, 8, 8)
+        p.end()
+
+
+def _v_divider(palette) -> QFrame:
+    f = QFrame()
+    f.setFixedSize(1, 16)
+    f.setObjectName("VDivider")
+    f.setStyleSheet(f"#VDivider {{ background-color: {palette.border}; border: none; }}")
+    return f
+
+
+def _pill_label(text: str, bg: str, fg: str, border: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lbl.setFixedHeight(20)
+    lbl.setStyleSheet(
+        f"background-color: {bg}; color: {fg}; border: 1px solid {border}; "
+        f"border-radius: 10px; padding: 0 8px; font-size: {FONT_SIZE.caption}px; "
+        f"font-weight: 700; letter-spacing: 0.06em;"
+    )
+    return lbl
 
 
 class StatusBar(QFrame):
-    """Rich status bar with simple-mode collapse."""
+    killRequested = Signal()
 
-    kill_requested = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent=None, theme: str = "dark"):
         super().__init__(parent)
-        self.setObjectName("StatusBar")
-        self._simple_mode = False
-        self._connected = False
+        self._theme = theme
+        self.setObjectName("StatusBarFrame")
+        self.setFixedHeight(32)
+        self._build_ui()
+        self._apply_theme(theme)
 
-        tokens = get_tokens("dark")
-        try:
-            pad = int(getattr(getattr(tokens, "spacing", None), "sm", 8))  # type: ignore[arg-type]
-        except Exception:
-            pad = 8
+        # clock timer
+        self._clock_timer = QTimer(self)
+        self._clock_timer.timeout.connect(self._tick_clock)
+        self._clock_timer.start(1000)
+        self._tick_clock()
 
-        self.setFrameShape(QFrame.Shape.StyledPanel)
+    def _build_ui(self):
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(12, 0, 12, 0)
+        self._layout.setSpacing(10)
 
-        self._stack_layout = QVBoxLayout(self)
-        self._stack_layout.setContentsMargins(pad, 4, pad, 4)
-        self._stack_layout.setSpacing(0)
+        # Left: dot + connection text + badges
+        self._dot = DotIndicator()
+        self._conn_label = QLabel("Connected")
+        self._conn_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; background: transparent; border: none;")
 
-        # --- Detailed mode container ---
-        self._detailed = QFrame(self)
-        self._detailed.setObjectName("StatusBarDetailed")
-        d_layout = QHBoxLayout(self._detailed)
-        d_layout.setContentsMargins(0, 0, 0, 0)
-        d_layout.setSpacing(pad)
+        p = get_palette(self._theme)
+        self._mode_badge = _pill_label("DEMO", p.warning_soft, p.warning, p.warning + "30")
+        self._env_badge = _pill_label("PAPER", p.surface, p.text_secondary, p.border)
 
-        # Connection dot
-        self.dot = QLabel("●", self._detailed)
-        self.dot.setObjectName("ConnectionDot")
-        self.dot.setStyleSheet("color: #888; font-size: 10px;")
-        self.dot.setToolTip(tr("status.disconnected", default="Disconnected"))
-        d_layout.addWidget(self.dot)
+        self._layout.addWidget(self._dot)
+        self._layout.addWidget(self._conn_label)
+        self._layout.addSpacing(2)
+        self._layout.addWidget(self._mode_badge)
+        self._layout.addWidget(self._env_badge)
+        self._layout.addWidget(_v_divider(p))
 
-        # DEMO/REAL badge
-        self.badge_account = Badge(text="DEMO", parent=self._detailed)  # type: ignore[call-arg]
-        d_layout.addWidget(self.badge_account)
+        # Middle: balance | equity | today P/L
+        self._balance_label = QLabel("Balance  $10,000.00")
+        self._equity_label = QLabel("Equity  $10,124.50")
+        self._pnl_label = QLabel("Today  ▲ $124.50")
+        for lbl in (self._balance_label, self._equity_label, self._pnl_label):
+            lbl.setStyleSheet(f"font-family: {FONT_MONO}; font-size: {FONT_SIZE.caption}px; font-feature-settings: 'tnum'; background: transparent; border: none;")
+        self._pnl_label.setStyleSheet(f"font-family: {FONT_MONO}; font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.profit}; background: transparent; border: none;")
 
-        # Mode badge
-        self.badge_mode = Badge(text="Paper", parent=self._detailed)  # type: ignore[call-arg]
-        d_layout.addWidget(self.badge_mode)
+        self._layout.addWidget(self._balance_label)
+        self._layout.addWidget(_v_divider(p))
+        self._layout.addWidget(self._equity_label)
+        self._layout.addWidget(_v_divider(p))
+        self._layout.addWidget(self._pnl_label)
+        self._layout.addStretch(1)
 
-        # Balance / Equity / Today P/L
-        self.lbl_balance = QLabel(tr("status.balance", default="Balance: —"), self._detailed)
-        self.lbl_balance.setObjectName("StatusBalance")
-        self.lbl_balance.setStyleSheet("font-variant-numeric: tabular-nums;")
-        d_layout.addWidget(self.lbl_balance)
-
-        self.lbl_equity = QLabel(tr("status.equity", default="Equity: —"), self._detailed)
-        self.lbl_equity.setObjectName("StatusEquity")
-        self.lbl_equity.setStyleSheet("font-variant-numeric: tabular-nums;")
-        d_layout.addWidget(self.lbl_equity)
-
-        self.lbl_today = QLabel(tr("status.today_pnl", default="Today: —"), self._detailed)
-        self.lbl_today.setObjectName("StatusTodayPnl")
-        self.lbl_today.setStyleSheet("font-variant-numeric: tabular-nums;")
-        d_layout.addWidget(self.lbl_today)
-
-        # DD bar
-        self.dd_bar = QProgressBar(self._detailed)
-        self.dd_bar.setObjectName("StatusDdBar")
-        self.dd_bar.setRange(0, 100)
-        self.dd_bar.setValue(0)
-        self.dd_bar.setFixedWidth(80)
-        self.dd_bar.setFixedHeight(10)
-        self.dd_bar.setTextVisible(False)
-        self.dd_bar.setToolTip(tr("status.drawdown", default="Drawdown"))
-        d_layout.addWidget(self.dd_bar)
-        self.lbl_dd = QLabel("DD 0.0%", self._detailed)
-        self.lbl_dd.setObjectName("StatusDdLabel")
-        d_layout.addWidget(self.lbl_dd)
-
-        self.lbl_risk = QLabel(tr("status.open_risk", default="Risk: —"), self._detailed)
-        d_layout.addWidget(self.lbl_risk)
-
-        self.lbl_bot = QLabel(tr("status.bot_stopped", default="Stopped"), self._detailed)
-        self.lbl_bot.setObjectName("StatusBotState")
-        d_layout.addWidget(self.lbl_bot)
-
-        self.lbl_sync = QLabel("● " + tr("status.sync_idle", default="Idle"), self._detailed)
-        self.lbl_sync.setObjectName("StatusSync")
-        d_layout.addWidget(self.lbl_sync)
-
-        self.lbl_clock = QLabel("--:--", self._detailed)
-        self.lbl_clock.setObjectName("StatusClock")
-        d_layout.addWidget(self.lbl_clock)
-
-        self.lbl_news = QLabel(tr("status.no_news", default="No news"), self._detailed)
-        self.lbl_news.setObjectName("StatusNews")
-        d_layout.addWidget(self.lbl_news)
-
-        d_layout.addStretch(1)
-
-        self.btn_kill = QPushButton(tr("status.kill_switch", default="Kill switch"), self._detailed)
-        self.btn_kill.setObjectName("KillSwitchButton")
-        self.btn_kill.setStyleSheet("color: #c0392b; border: 1px solid #c0392b; padding: 2px 8px;")
-        self.btn_kill.clicked.connect(self.kill_requested.emit)
-        d_layout.addWidget(self.btn_kill)
-
-        # --- Simple mode container ---
-        self._simple = QFrame(self)
-        self._simple.setObjectName("StatusBarSimple")
-        s_layout = QHBoxLayout(self._simple)
-        s_layout.setContentsMargins(0, 0, 0, 0)
-        s_layout.setSpacing(pad)
-
-        self.lbl_plain = QLabel(
-            tr("plain_status_idle", default="Watching the market — no action needed."), self._simple
-        )
-        self.lbl_plain.setObjectName("StatusPlainLine")
-        self.lbl_plain.setStyleSheet("font-weight: 500;")
-        s_layout.addWidget(self.lbl_plain, 1)
-
-        self.btn_stop_simple = QPushButton(tr("status.stop_trading_now", default="Stop trading now"), self._simple)
-        self.btn_stop_simple.setObjectName("StopTradingButton")
-        self.btn_stop_simple.setStyleSheet("color: #c0392b; border: 1px solid #c0392b; padding: 2px 8px;")
-        self.btn_stop_simple.clicked.connect(self.kill_requested.emit)
-        s_layout.addWidget(self.btn_stop_simple)
-
-        self._stack_layout.addWidget(self._detailed)
-        self._stack_layout.addWidget(self._simple)
-        self._simple.setVisible(False)
-
-    def set_simple_mode(self, simple: bool) -> None:
-        """Collapse to plain-language line when simple is True."""
-        self._simple_mode = simple
-        self._detailed.setVisible(not simple)
-        self._simple.setVisible(simple)
-
-    @Slot(bool)
-    def set_connected(self, connected: bool) -> None:
-        """Set connection dot color."""
-        self._connected = connected
-        if connected:
-            self.dot.setStyleSheet("color: #27ae60; font-size: 10px;")
-            self.dot.setToolTip(tr("status.connected", default="Connected"))
-        else:
-            self.dot.setStyleSheet("color: #888; font-size: 10px;")
-            self.dot.setToolTip(tr("status.disconnected", default="Disconnected"))
-
-    def set_account_type(self, account_type: str) -> None:
-        """Set DEMO/REAL/CONTEST badge."""
-        text = account_type.upper()
-        # Badge API may be setText or set_text
-        try:
-            self.badge_account.setText(text)  # type: ignore[attr-defined]
-        except Exception:
-            try:
-                self.badge_account.set_text(text)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-
-    def set_mode(self, mode: str) -> None:
-        """Set mode badge (Analysis/Paper/Semi/Auto)."""
-        try:
-            self.badge_mode.setText(mode)  # type: ignore[attr-defined]
-        except Exception:
-            try:
-                self.badge_mode.set_text(mode)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-
-    def set_balance(self, value: float) -> None:
-        """Set balance label with tabular numbers."""
-        self.lbl_balance.setText(
-            tr("status.balance_value", default="Balance: {value:.2f}").format(value=value)
-            if "{value" in tr("status.balance_value", default="Balance: {value:.2f}")
-            else f"Balance: {value:.2f}"
+        # Right: bot state | sync | clock | kill
+        self._bot_label = QLabel("● Bot idle")
+        self._bot_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; color: {p.text_secondary}; background: transparent; border: none;")
+        self._sync_label = QLabel("Synced just now")
+        self._sync_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; color: {p.text_tertiary}; background: transparent; border: none;")
+        self._clock_label = QLabel("--:--:--")
+        self._clock_label.setStyleSheet(
+            f"font-family: {FONT_MONO}; font-size: {FONT_SIZE.caption}px; color: {p.text_secondary}; background: transparent; border: none; font-feature-settings: 'tnum';"
         )
 
-    def set_equity(self, value: float) -> None:
-        """Set equity label."""
-        self.lbl_equity.setText(f"Equity: {value:.2f}")
+        self._kill_btn = QPushButton("⬢ Kill Switch")
+        self._kill_btn.setObjectName("DangerButton")
+        self._kill_btn.setFixedHeight(24)
+        self._kill_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._kill_btn.clicked.connect(self.killRequested.emit)
 
-    def set_today_pnl(self, value: float, pct: float) -> None:
-        """Set today P/L with +/- text and icon — never color alone."""
-        sign = "+" if value >= 0 else ""
-        # Include arrow icon + text so color is not sole indicator
-        arrow = "▲" if value >= 0 else "▼"
-        color = "#27ae60" if value >= 0 else "#c0392b"
-        self.lbl_today.setText(f"{arrow} {sign}{value:.2f} ({sign}{pct:.2f}%)")
-        self.lbl_today.setStyleSheet(f"font-variant-numeric: tabular-nums; color: {color};")
+        p2 = get_palette(self._theme)
+        self._layout.addWidget(self._bot_label)
+        self._layout.addWidget(_v_divider(p2))
+        self._layout.addWidget(self._sync_label)
+        self._layout.addWidget(_v_divider(p2))
+        self._layout.addWidget(self._clock_label)
+        self._layout.addSpacing(4)
+        self._layout.addWidget(self._kill_btn)
 
-    def set_drawdown_pct(self, pct: float) -> None:
-        """Set drawdown bar and label."""
-        clamped = max(0, min(100, int(round(pct))))
-        self.dd_bar.setValue(clamped)
-        self.lbl_dd.setText(f"DD {pct:.1f}%")
+    def _apply_theme(self, theme: str):
+        self._theme = theme
+        p = get_palette(theme)
+        self.setStyleSheet(f"#StatusBarFrame {{ background-color: {p.surface}; border-top: 1px solid {p.border}; border-left: none; border-right: none; border-bottom: none; }}")
+        # refresh text colors
+        self._conn_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.text}; background: transparent; border: none;")
+        for lbl in (self._balance_label, self._equity_label):
+            lbl.setStyleSheet(
+                f"font-family: {FONT_MONO}; font-size: {FONT_SIZE.caption}px; color: {p.text_secondary}; font-feature-settings: 'tnum'; background: transparent; border: none;"
+            )
+        self._bot_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; color: {p.text_secondary}; background: transparent; border: none;")
+        self._sync_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; color: {p.text_tertiary}; background: transparent; border: none;")
+        self._clock_label.setStyleSheet(
+            f"font-family: {FONT_MONO}; font-size: {FONT_SIZE.caption}px; color: {p.text_secondary}; background: transparent; border: none; font-feature-settings: 'tnum';"
+        )
 
-    def set_open_risk_pct(self, pct: float) -> None:
-        """Set open risk label."""
-        self.lbl_risk.setText(f"Risk: {pct:.1f}%")
+    # ── Public API ──
+    def set_theme(self, theme: str):
+        self._apply_theme(theme)
 
-    def set_bot_state(self, state: str) -> None:
-        """Set bot state label (Running/Paused by limit/Stopped/Disconnected)."""
-        self.lbl_bot.setText(state)
+    def set_connection_state(self, state: str):
+        """state: connected | connecting | disconnected | error"""
+        p = get_palette(self._theme)
+        s = state.lower()
+        if s == "connected":
+            self._dot.set_color(p.profit)
+            self._dot.stop_pulse()
+            self._conn_label.setText("Connected")
+            self._conn_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.profit}; background: transparent; border: none;")
+        elif s == "connecting":
+            self._dot.set_color(p.warning)
+            self._dot.start_pulse()
+            self._conn_label.setText("Connecting…")
+            self._conn_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.warning}; background: transparent; border: none;")
+        elif s in ("disconnected", "offline"):
+            self._dot.set_color(p.text_tertiary)
+            self._dot.stop_pulse()
+            self._conn_label.setText("Offline")
+            self._conn_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.text_tertiary}; background: transparent; border: none;")
+        else:  # error
+            self._dot.set_color(p.loss)
+            self._dot.stop_pulse()
+            self._conn_label.setText("Error")
+            self._conn_label.setStyleSheet(f"font-size: {FONT_SIZE.caption}px; font-weight: 600; color: {p.loss}; background: transparent; border: none;")
 
-    def set_sync_state(self, state: str) -> None:
-        """Set sync state indicator."""
-        self.lbl_sync.setText(f"● {state}")
-
-    def set_session_clock(self, text: str) -> None:
-        """Set session clock label."""
-        self.lbl_clock.setText(text)
-
-    def set_next_news(self, title: str, dt: datetime | None) -> None:
-        """Set next news label."""
-        if dt is not None:
-            self.lbl_news.setText(f"{title} @ {dt.strftime('%H:%M')}")
+    def set_mode(self, mode: str):
+        """DEMO / REAL"""
+        p = get_palette(self._theme)
+        m = mode.upper()
+        self._mode_badge.setText(m)
+        if m == "REAL":
+            self._mode_badge.setStyleSheet(
+                f"background-color: {p.profit_soft}; color: {p.profit}; border: 1px solid {p.profit}30; "
+                f"border-radius: 10px; padding: 0 8px; font-size: {FONT_SIZE.caption}px; font-weight: 700; letter-spacing: 0.06em;"
+            )
         else:
-            self.lbl_news.setText(title if title else tr("status.no_news", default="No news"))
+            self._mode_badge.setStyleSheet(
+                f"background-color: {p.warning_soft}; color: {p.warning}; border: 1px solid {p.warning}30; "
+                f"border-radius: 10px; padding: 0 8px; font-size: {FONT_SIZE.caption}px; font-weight: 700; letter-spacing: 0.06em;"
+            )
 
-    def set_plain_status(self, key: str, *, default: str | None = None, **kwargs: object) -> None:
-        """Set plain-language status line for simple mode."""
-        self.lbl_plain.setText(tr(key, default=default, **kwargs))
+    def set_balance(self, balance: float, equity: float, pnl: float):
+        self._balance_label.setText(f"Balance  ${balance:,.2f}")
+        self._equity_label.setText(f"Equity  ${equity:,.2f}")
+        p = get_palette(self._theme)
+        arrow = "▲" if pnl >= 0 else "▼"
+        color = p.profit if pnl >= 0 else p.loss
+        sign = "+" if pnl >= 0 else ""
+        self._pnl_label.setText(f"Today  {arrow} {sign}${pnl:,.2f}")
+        self._pnl_label.setStyleSheet(
+            f"font-family: {FONT_MONO}; font-size: {FONT_SIZE.caption}px; font-weight: 700; color: {color}; background: transparent; border: none; font-feature-settings: 'tnum';"
+        )
+
+    def set_bot_state(self, text: str):
+        self._bot_label.setText(f"● {text}")
+
+    def set_sync_text(self, text: str):
+        self._sync_label.setText(text)
+
+    def _tick_clock(self):
+        from datetime import datetime
+
+        self._clock_label.setText(datetime.now().strftime("%H:%M:%S"))

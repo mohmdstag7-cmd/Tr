@@ -55,9 +55,7 @@ class HistorySync:
 
         # warn if history too short
         if len(all_deals) < 100:
-            logger.warning(
-                f"History too short for training/backtesting: only {len(all_deals)} deals (max bars setting may be low)"
-            )
+            logger.warning(f"History too short for training/backtesting: only {len(all_deals)} deals (max bars setting may be low)")
 
         logger.info(f"Imported {len(all_deals)} deals")
         return all_deals

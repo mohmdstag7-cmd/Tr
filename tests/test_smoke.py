@@ -125,10 +125,10 @@ def test_tokens_light_has_all_colors(tokens_light: Any) -> None:
 
 
 def test_qss_generation_returns_nonempty_string(tokens_dark: Any) -> None:
-    """generate_qss returns a non-empty stylesheet string."""
-    from app.ui.theme.qss import generate_qss
+    """build_qss returns a non-empty stylesheet string."""
+    from app.ui.theme.qss import build_qss
 
-    qss = generate_qss(tokens_dark)
+    qss = build_qss("dark")
     assert isinstance(qss, str)
     assert len(qss) > 1000
 
