@@ -26,6 +26,12 @@ QWidget#PageRoot {{
     background-color: {p.bg};
 }}
 
+/* ── Labels: transparent background by default ── */
+QLabel {{
+    background-color: transparent;
+    border: none;
+}}
+
 /* ── Typography helpers ── */
 QLabel#PageTitle {{
     font-size: {FONT_SIZE.title}px;

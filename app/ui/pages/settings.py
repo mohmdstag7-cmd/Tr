@@ -175,14 +175,11 @@ class SettingsPage(QWidget):
 
         ver_row = QHBoxLayout()
         ver_row.setSpacing(12)
-        # version info
+        # version info — import the STRING, not the module
         try:
-            from app import __version__ as _ver
+            from app.__version__ import __version__ as _ver
         except Exception:
-            try:
-                from app.__version__ import __version__ as _ver  # type: ignore
-            except Exception:
-                _ver = "0.0.0"
+            _ver = "0.0.0"
         self._version_label = QLabel(f"Version  {_ver}")
         self._version_label.setStyleSheet(
             f"font-family: 'JetBrains Mono', monospace; font-size: {FONT_SIZE.body}px; font-weight: 600; color: {p.text}; background: transparent; border: none; font-feature-settings: 'tnum';"  # noqa: E501
