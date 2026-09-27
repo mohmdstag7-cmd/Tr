@@ -1,0 +1,98 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.whl
+.venv/
+venv/
+env/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# PySide6 / Qt
+*.pyc
+*.moc
+*.o
+*.so
+
+# PyInstaller
+*.manifest
+*.spec
+*.exe
+*.msi
+
+# Pytest / Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+junit.xml
+test-results/
+
+# Mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.code-workspace
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs & crash reports (runtime)
+logs/
+logs/*.log
+crash_reports/
+crash_reports/**
+
+# SQLite — source of truth is local, never commit DBs
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Env / secrets — never commit
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# Models — allow only committed test fixtures, ignore generated models
+models/*.joblib
+models/*.pkl
+models/*.bin
+!models/fixtures/
+!models/fixtures/*.joblib
+
+# Supabase / local config overrides
+.supabase/
+local.yaml
+config.local.yaml
