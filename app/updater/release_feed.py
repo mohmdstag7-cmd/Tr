@@ -36,10 +36,6 @@ class ReleaseFeed:
         }
 
     @property
-    def latest_json_url(self) -> str:
-        return f"https://github.com/{self.repo}/releases/download/latest/latest.json"
-
-    @property
     def api_latest_url(self) -> str:
         return f"https://api.github.com/repos/{self.repo}/releases/latest"
 
@@ -55,55 +51,100 @@ class ReleaseFeed:
                 client.close()
 
     def _fetch_with_client_sync(self, client: httpx.Client) -> UpdateInfo:
-        # Try static latest.json first
-        try:
-            log.info(f"Fetching latest.json from {self.latest_json_url}")
-            resp = client.get(self.latest_json_url)
-            if resp.status_code == 200:
-                data = resp.json()
-                return self._parse_update_info(data)
-            log.info(f"latest.json returned {resp.status_code}, trying API fallback")
-        except Exception as exc:  # noqa: BLE001
-            log.warning(f"Failed to fetch latest.json: {exc}, trying API fallback")
+        """Fetch the latest release's metadata.
 
-        # Fallback: GitHub API
+        GitHub Releases does NOT support a stable ``/releases/download/latest/...``
+        URL — ``latest`` would have to be a moving git tag (which GitHub's release
+        asset path resolves against tag_name of an actual Release, not just any tag).
+        Instead we:
+
+        1. Query the GitHub Releases API for the latest published release.
+        2. Read its ``tag_name`` (e.g. ``v0.1.0``).
+        3. Fetch ``releases/download/{tag_name}/latest.json`` — the canonical
+           release asset that release.yml uploads alongside the installer.
+        4. Parse it as ``UpdateInfo``.
+
+        If the API returns 404 (no releases yet) we raise ``ReleaseFeedError``.
+        """
+        # Step 1+2: discover the latest release tag via the API.
         try:
-            log.info(f"Fetching GitHub API {self.api_latest_url}")
+            log.info(f"Fetching latest release info from {self.api_latest_url}")
             resp = client.get(self.api_latest_url)
+            if resp.status_code == 404:
+                raise ReleaseFeedError(
+                    "No GitHub Release found. The first release must be created before the "
+                    "in-app updater can check for updates."
+                )
             if resp.status_code != 200:
                 raise ReleaseFeedError(f"GitHub API returned HTTP {resp.status_code}: {resp.text[:500]}")
             api_data = resp.json()
-            return self._parse_api_response(api_data)
+            tag_name = api_data.get("tag_name")
+            if not tag_name:
+                raise ReleaseFeedError("GitHub API response missing 'tag_name'")
         except httpx.RequestError as exc:
             raise ReleaseFeedError(f"Network error while fetching releases: {exc}") from exc
         except ReleaseFeedError:
             raise
         except Exception as exc:  # noqa: BLE001
-            raise ReleaseFeedError(f"Failed to parse release feed: {exc}") from exc
+            raise ReleaseFeedError(f"Failed to query GitHub API: {exc}") from exc
+
+        # Step 3: fetch latest.json from the discovered release tag.
+        latest_json_url = f"https://github.com/{self.repo}/releases/download/{tag_name}/latest.json"
+        try:
+            log.info(f"Fetching latest.json from {latest_json_url}")
+            resp = client.get(latest_json_url)
+            if resp.status_code != 200:
+                raise ReleaseFeedError(
+                    f"latest.json not found on release {tag_name} (HTTP {resp.status_code}). "
+                    "Ensure the release.yml workflow uploaded latest.json as a release asset."
+                )
+            data = resp.json()
+        except httpx.RequestError as exc:
+            raise ReleaseFeedError(f"Network error while fetching latest.json: {exc}") from exc
+        except ReleaseFeedError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ReleaseFeedError(f"Failed to fetch latest.json: {exc}") from exc
+
+        # Step 4: parse.
+        return self._parse_update_info(data)
 
     # ----------------------------------------------------------------- async
     async def fetch_latest(self) -> UpdateInfo:
-        """Async fetch using ``httpx.AsyncClient``."""
+        """Async fetch using ``httpx.AsyncClient``.
+
+        Same logic as :meth:`fetch_latest_sync`: first query the API for the
+        latest release tag, then fetch ``latest.json`` from that tag's assets.
+        """
         headers = self._headers
         try:
             async with httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True) as client:
-                # Try static latest.json
-                try:
-                    log.info(f"Fetching latest.json from {self.latest_json_url}")
-                    resp = await client.get(self.latest_json_url)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        return self._parse_update_info(data)
-                    log.info(f"latest.json returned {resp.status_code}, trying API fallback")
-                except Exception as exc:  # noqa: BLE001
-                    log.warning(f"Failed to fetch latest.json: {exc}, trying API fallback")
-
-                # Fallback API
+                # Step 1+2: API call to find the latest release tag.
+                log.info(f"Fetching latest release info from {self.api_latest_url}")
                 resp = await client.get(self.api_latest_url)
+                if resp.status_code == 404:
+                    raise ReleaseFeedError(
+                        "No GitHub Release found. The first release must be created before the "
+                        "in-app updater can check for updates."
+                    )
                 if resp.status_code != 200:
                     raise ReleaseFeedError(f"GitHub API returned HTTP {resp.status_code}: {resp.text[:500]}")
                 api_data = resp.json()
-                return self._parse_api_response(api_data)
+                tag_name = api_data.get("tag_name")
+                if not tag_name:
+                    raise ReleaseFeedError("GitHub API response missing 'tag_name'")
+
+                # Step 3: fetch latest.json from the discovered release tag.
+                latest_json_url = f"https://github.com/{self.repo}/releases/download/{tag_name}/latest.json"
+                log.info(f"Fetching latest.json from {latest_json_url}")
+                resp = await client.get(latest_json_url)
+                if resp.status_code != 200:
+                    raise ReleaseFeedError(
+                        f"latest.json not found on release {tag_name} (HTTP {resp.status_code}). "
+                        "Ensure the release.yml workflow uploaded latest.json as a release asset."
+                    )
+                data = resp.json()
+                return self._parse_update_info(data)
         except ReleaseFeedError:
             raise
         except httpx.RequestError as exc:
@@ -124,51 +165,3 @@ class ReleaseFeed:
             return UpdateInfo.model_validate(data)
         except Exception as exc:  # noqa: BLE001
             raise ReleaseFeedError(f"Invalid latest.json payload: {exc}") from exc
-
-    def _parse_api_response(self, data: dict[str, Any]) -> UpdateInfo:
-        """Construct UpdateInfo from GitHub Releases API response."""
-        try:
-            tag = data.get("tag_name", "")
-            tag.lstrip("v")
-            assets: list[dict[str, Any]] = data.get("assets", [])
-            installer_url = ""
-
-            for asset in assets:
-                name: str = asset.get("name", "")
-                url: str = asset.get("browser_download_url", "")
-                lname = name.lower()
-                if "setup" in lname and lname.endswith(".exe"):
-                    installer_url = url
-                elif "portable" in lname and lname.endswith(".zip"):
-                    pass
-                elif name == "latest.json":
-                    # If API response somehow includes latest.json, prefer it
-                    pass
-
-            # Try to fetch checksums.txt to extract sha256 if not in API
-            # For now, require installer_url; sha256 may be empty -> error
-            if not installer_url:
-                # Fallback: first exe asset
-                for asset in assets:
-                    if asset.get("name", "").endswith(".exe"):
-                        installer_url = asset["browser_download_url"]
-                        break
-
-            if not installer_url:
-                raise ReleaseFeedError("No installer asset found in GitHub release")
-
-            # If checksums not available, we cannot verify — raise
-            # Attempt to keep installer_sha256 empty as error case
-            # The caller will fail verification; we raise here for clarity
-            # Try to find sha from asset metadata or leave placeholder
-            # We set a dummy that will fail verification if not provided
-            # Instead, try to parse body for sha? For Phase 1, require latest.json
-            raise ReleaseFeedError(
-                "GitHub API fallback requires latest.json asset; "
-                "direct API parsing without checksums is not supported. "
-                "Please ensure latest.json is attached to the release."
-            )
-        except ReleaseFeedError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise ReleaseFeedError(f"Failed to parse GitHub API response: {exc}") from exc

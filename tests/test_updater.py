@@ -81,22 +81,41 @@ def test_release_feed_uses_correct_url(monkeypatch: pytest.MonkeyPatch) -> None:
     called_urls: list[str] = []
 
     class FakeResp:
-        status_code = 200
+        def __init__(self, payload: dict) -> None:
+            self.status_code = 200
+            self._payload = payload
 
         def json(self) -> dict:
-            return {
-                "version": "0.2.0",
-                "notes_url": "https://github.com/mohmdstag7-cmd/Tr/releases/tag/v0.2.0",
-                "installer_url": "https://github.com/mohmdstag7-cmd/Tr/releases/download/v0.2.0/MT5TradingWorkstation-Setup-0.2.0.exe",
-                "installer_sha256": "a" * 64,
-                "published_at": "2025-01-01T00:00:00Z",
-                "is_breaking": False,
-                "release_notes": "notes",
-            }
+            return self._payload
+
+    # The API call returns a GitHub Releases response (with tag_name + assets).
+    api_payload = {
+        "tag_name": "v0.2.0",
+        "assets": [
+            {
+                "name": "latest.json",
+                "browser_download_url": ("https://github.com/mohmdstag7-cmd/Tr/releases/download/v0.2.0/latest.json"),
+            },
+        ],
+    }
+    # The latest.json asset returns the canonical update manifest.
+    latest_json_payload = {
+        "version": "0.2.0",
+        "notes_url": "https://github.com/mohmdstag7-cmd/Tr/releases/tag/v0.2.0",
+        "installer_url": (
+            "https://github.com/mohmdstag7-cmd/Tr/releases/download/v0.2.0/" "MT5TradingWorkstation-Setup-0.2.0.exe"
+        ),
+        "installer_sha256": "a" * 64,
+        "published_at": "2025-01-01T00:00:00Z",
+        "is_breaking": False,
+        "release_notes": "notes",
+    }
 
     def fake_get(self: httpx.Client, url: str, **kwargs) -> FakeResp:  # type: ignore[no-untyped-def]
         called_urls.append(url)
-        return FakeResp()
+        if "api.github.com" in url:
+            return FakeResp(api_payload)
+        return FakeResp(latest_json_payload)
 
     monkeypatch.setattr(httpx.Client, "get", fake_get)
 
@@ -104,6 +123,8 @@ def test_release_feed_uses_correct_url(monkeypatch: pytest.MonkeyPatch) -> None:
     info = feed.fetch_latest_sync()
     assert info.version == "0.2.0"
     assert any("latest.json" in u for u in called_urls)
+    # The first call should be the API discovery call.
+    assert "api.github.com" in called_urls[0]
 
 
 def test_downloader_checksum_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
