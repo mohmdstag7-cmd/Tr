@@ -203,3 +203,56 @@ def _disable_auto_update_check_in_tests(monkeypatch: pytest.MonkeyPatch) -> None
         return None
 
     monkeypatch.setattr(QTimer, "singleShot", _no_op_single_shot, raising=False)
+
+
+# ----------------------------------------------------------------- Phase 3
+@pytest.fixture
+def fake_mt5() -> Any:
+    """Return a configured FakeMT5 instance.
+
+    The fake replaces the real ``MetaTrader5`` module everywhere it's imported,
+    so tests can run on Linux CI where the real package isn't installable.
+    """
+    from tests.fakes.fake_mt5 import FakeMT5
+
+    return FakeMT5()
+
+
+@pytest.fixture
+def mt5_gateway_with_fake(fake_mt5: Any, monkeypatch: pytest.MonkeyPatch, qapp: QApplication) -> Any:
+    """Create an MT5Gateway wired to FakeMT5 via monkeypatching the import.
+
+    Returns the gateway instance. Tests can then call gateway.initialize(...)
+    with fake credentials.
+    """
+    import sys
+
+    # Insert FakeMT5 as `MetaTrader5` so the gateway picks it up.
+    monkeypatch.setitem(sys.modules, "MetaTrader5", fake_mt5)
+
+    from app.mt5.gateway import MT5Gateway
+
+    gateway = MT5Gateway(parent=qapp)
+    yield gateway
+
+    # Teardown: stop the worker thread cleanly.
+    # The gateway's QThread must be quit + waited before the QObjects are destroyed,
+    # otherwise Qt prints "QThread: Destroyed while thread is still running".
+    try:
+        gateway.close()
+    except Exception:
+        pass
+    # Give the event loop a chance to process the quit signal.
+    try:
+        qapp.processEvents()
+    except Exception:
+        pass
+
+
+@pytest.fixture
+def gateway_with_connection(mt5_gateway_with_fake: Any) -> Any:
+    """An MT5Gateway that has already been initialized with FakeMT5 credentials."""
+    gateway = mt5_gateway_with_fake
+    fut = gateway.initialize(path=None, login=12345, password="test", server="Demo")
+    fut.result(timeout=10)
+    return gateway

@@ -5,20 +5,20 @@ from __future__ import annotations
 import sys
 
 
-def main() -> None:
-    """Run MT5 smoke test."""
+def main() -> int:
+    """Run MT5 smoke test. Returns 0 on success, 1 on failure."""
     try:
         import MetaTrader5 as mt5  # noqa: WPS433
     except ImportError:
         print("MetaTrader5 not installed")
-        sys.exit(1)
+        return 1
 
     try:
         initialized = mt5.initialize()
         if not initialized:
             error = mt5.last_error()
             print(f"MT5 initialize failed: {error}")
-            sys.exit(1)
+            return 1
 
         print("MT5 initialized successfully")
 
@@ -39,6 +39,8 @@ def main() -> None:
         else:
             print("symbols_get returned None")
 
+        return 0
+
     finally:
         try:
             mt5.shutdown()
@@ -47,4 +49,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

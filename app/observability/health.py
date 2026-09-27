@@ -115,6 +115,18 @@ class HealthRegistry(QObject):
             self._latest[name] = hc
             return hc
 
+    def set_gateway(self, gateway: object) -> None:
+        """Wire up a real MT5Gateway so the MT5-related checks return real values.
+
+        Without this, the MT5 checks return UNKNOWN. Called by MainWindow at
+        startup once the gateway is constructed.
+        """
+        self._gateway = gateway
+
+    @property
+    def gateway(self) -> object | None:
+        return getattr(self, "_gateway", None)
+
     def _run_all(self) -> None:
         self.run_all()
 
@@ -138,39 +150,179 @@ class HealthRegistry(QObject):
 
 
 def _check_mt5_connected() -> HealthCheck:
-    return HealthCheck(
-        name="mt5_connected",
-        status="unknown",
-        message="Phase 3 will wire up real MT5",
-        last_checked=datetime.now(UTC),
-    )
+    gw = health_registry.gateway
+    if gw is None:
+        return HealthCheck(
+            name="mt5_connected",
+            status="unknown",
+            message="MT5Gateway not wired up yet (Phase 3+)",
+            last_checked=datetime.now(UTC),
+        )
+    try:
+        # The gateway exposes is_connected() which returns True/False.
+        is_conn = bool(gw.is_connected())  # type: ignore[attr-defined]
+        if is_conn:
+            return HealthCheck(
+                name="mt5_connected",
+                status="ok",
+                message="MT5 terminal connected",
+                value=is_conn,
+                last_checked=datetime.now(UTC),
+            )
+        return HealthCheck(
+            name="mt5_connected",
+            status="error",
+            message="MT5 terminal disconnected",
+            value=is_conn,
+            last_checked=datetime.now(UTC),
+        )
+    except Exception as exc:
+        return HealthCheck(
+            name="mt5_connected",
+            status="error",
+            message=f"Health check failed: {exc}",
+            last_checked=datetime.now(UTC),
+        )
 
 
 def _check_algo_trading() -> HealthCheck:
-    return HealthCheck(
-        name="algo_trading_enabled",
-        status="unknown",
-        message="Phase 3 will wire up real MT5",
-        last_checked=datetime.now(UTC),
-    )
+    gw = health_registry.gateway
+    if gw is None:
+        return HealthCheck(
+            name="algo_trading_enabled",
+            status="unknown",
+            message="MT5Gateway not wired up yet (Phase 3+)",
+            last_checked=datetime.now(UTC),
+        )
+    try:
+        # terminal_info() returns a Future; resolve with a 5s timeout.
+        fut = gw.terminal_info()  # type: ignore[attr-defined]
+        term = fut.result(timeout=5)
+        if term is None:
+            return HealthCheck(
+                name="algo_trading_enabled",
+                status="error",
+                message="terminal_info() returned None",
+                last_checked=datetime.now(UTC),
+            )
+        if getattr(term, "trade_allowed", False):
+            return HealthCheck(
+                name="algo_trading_enabled",
+                status="ok",
+                message="Algo Trading is ON",
+                value=True,
+                last_checked=datetime.now(UTC),
+            )
+        return HealthCheck(
+            name="algo_trading_enabled",
+            status="warning",
+            message="Algo Trading is OFF — press the Algo Trading button in the MT5 toolbar",
+            value=False,
+            last_checked=datetime.now(UTC),
+        )
+    except Exception as exc:
+        return HealthCheck(
+            name="algo_trading_enabled",
+            status="error",
+            message=f"Health check failed: {exc}",
+            last_checked=datetime.now(UTC),
+        )
 
 
 def _check_quotes_fresh() -> HealthCheck:
-    return HealthCheck(
-        name="quotes_fresh",
-        status="unknown",
-        message="Phase 3 will wire up real MT5",
-        last_checked=datetime.now(UTC),
-    )
+    gw = health_registry.gateway
+    if gw is None:
+        return HealthCheck(
+            name="quotes_fresh",
+            status="unknown",
+            message="MT5Gateway not wired up yet (Phase 3+)",
+            last_checked=datetime.now(UTC),
+        )
+    try:
+        fut = gw.symbol_info_tick("EURUSD")  # type: ignore[attr-defined]
+        tick = fut.result(timeout=5)
+        if tick is None:
+            return HealthCheck(
+                name="quotes_fresh",
+                status="error",
+                message="EURUSD tick is None",
+                last_checked=datetime.now(UTC),
+            )
+        age = (datetime.now(UTC) - tick.time).total_seconds()
+        if age < 5:
+            status = "ok"
+            msg = f"EURUSD tick is {age:.1f}s old"
+        elif age < 60:
+            status = "warning"
+            msg = f"EURUSD tick is {age:.1f}s old (>5s)"
+        else:
+            status = "error"
+            msg = f"EURUSD tick is {age:.1f}s old (>60s)"
+        return HealthCheck(
+            name="quotes_fresh",
+            status=status,  # type: ignore[arg-type]
+            message=msg,
+            value=age,
+            last_checked=datetime.now(UTC),
+        )
+    except Exception as exc:
+        return HealthCheck(
+            name="quotes_fresh",
+            status="error",
+            message=f"Health check failed: {exc}",
+            last_checked=datetime.now(UTC),
+        )
 
 
 def _check_broker_offset() -> HealthCheck:
-    return HealthCheck(
-        name="broker_offset_stable",
-        status="unknown",
-        message="Phase 3 will wire up real MT5",
-        last_checked=datetime.now(UTC),
-    )
+    gw = health_registry.gateway
+    if gw is None:
+        return HealthCheck(
+            name="broker_offset_stable",
+            status="unknown",
+            message="MT5Gateway not wired up yet (Phase 3+)",
+            last_checked=datetime.now(UTC),
+        )
+    try:
+        # The connection caches broker_offset on initialize; compare it to
+        # what we'd compute now.
+        from app.mt5.connection import detect_broker_utc_offset
+
+        current_offset = detect_broker_utc_offset()
+        cached_offset = getattr(gw, "_broker_offset", None) if hasattr(gw, "_broker_offset") else None
+        conn = getattr(gw, "_conn", None)
+        if conn is not None:
+            cached_offset = getattr(conn, "_broker_offset", None)
+        if cached_offset is None:
+            return HealthCheck(
+                name="broker_offset_stable",
+                status="unknown",
+                message="Broker offset not yet cached",
+                value=current_offset,
+                last_checked=datetime.now(UTC),
+            )
+        if abs(current_offset - cached_offset) <= 1:
+            return HealthCheck(
+                name="broker_offset_stable",
+                status="ok",
+                message=f"Broker UTC offset: {current_offset}s",
+                value=current_offset,
+                last_checked=datetime.now(UTC),
+            )
+        return HealthCheck(
+            name="broker_offset_stable",
+            status="warning",
+            message=f"Broker offset changed: cached {cached_offset}s, current {current_offset}s (DST change?)",
+            value=current_offset,
+            last_checked=datetime.now(UTC),
+        )
+    except Exception as exc:
+        return HealthCheck(
+            name="broker_offset_stable",
+            status="error",
+            message=f"Health check failed: {exc}",
+            last_checked=datetime.now(UTC),
+        )
 
 
 def _check_sync_queue() -> HealthCheck:
@@ -376,3 +528,8 @@ def _check_clock_drift() -> HealthCheck:
 
 
 health_registry = HealthRegistry()
+
+
+def get_health_registry() -> HealthRegistry:
+    """Return the singleton HealthRegistry instance."""
+    return health_registry

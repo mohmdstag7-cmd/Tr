@@ -1,1 +1,1 @@
-"""Dialogs package."""
+"""UI dialogs."""
