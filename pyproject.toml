@@ -37,7 +37,7 @@ dev = [
     "pytest-cov==5.0.0",
     "pytest-mock==3.14.0",
     "ruff==0.6.9",
-    "mypy==1.11.2",
+    "mypy==2.3.1",
     "types-PyYAML==6.0.12.20240917",
     "pre-commit==4.0.1",
     "pyinstaller==6.10.0",
