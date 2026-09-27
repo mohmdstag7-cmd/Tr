@@ -113,7 +113,7 @@ def test_release_feed_uses_correct_url(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_get(self: httpx.Client, url: str, **kwargs) -> FakeResp:  # type: ignore[no-untyped-def]
         called_urls.append(url)
-        if "api.github.com" in url:
+        if url.startswith("https://api.github.com/"):
             return FakeResp(api_payload)
         return FakeResp(latest_json_payload)
 
@@ -124,7 +124,7 @@ def test_release_feed_uses_correct_url(monkeypatch: pytest.MonkeyPatch) -> None:
     assert info.version == "0.2.0"
     assert any("latest.json" in u for u in called_urls)
     # The first call should be the API discovery call.
-    assert "api.github.com" in called_urls[0]
+    assert called_urls[0].startswith("https://api.github.com/")
 
 
 def test_downloader_checksum_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
