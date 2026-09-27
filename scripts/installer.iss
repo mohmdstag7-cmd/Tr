@@ -29,7 +29,7 @@ SetupIconFile=
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "dist\MT5TradingWorkstation\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "..\dist\MT5TradingWorkstation\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 Name: "{group}\MT5 Trading Workstation"; Filename: "{app}\MT5TradingWorkstation.exe"
