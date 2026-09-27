@@ -1,2 +1,2 @@
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 __app_name__ = "MT5 Trading Workstation"

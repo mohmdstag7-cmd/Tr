@@ -122,7 +122,7 @@ def test_release_feed_uses_correct_url(monkeypatch: pytest.MonkeyPatch) -> None:
     assert info.version == "0.2.0"
     assert any("latest.json" in u for u in called_urls)
     # The first call should be the API discovery call.
-    assert called_urls[0].startswith("https://api.github.com/")
+    assert "raw.githubusercontent.com" in called_urls[0]
 
 
 def test_downloader_checksum_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

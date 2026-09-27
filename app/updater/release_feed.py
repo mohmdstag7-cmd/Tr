@@ -1,4 +1,4 @@
-"""Fetch ``latest.json`` from GitHub Releases."""
+"""Fetch ``latest.json`` from GitHub Releases — rate-limit-free via versions.json."""
 
 from __future__ import annotations
 
@@ -19,8 +19,10 @@ class ReleaseFeedError(RuntimeError):
 class ReleaseFeed:
     """Fetch update metadata from GitHub Releases.
 
-    Primary source is ``https://github.com/{repo}/releases/download/latest/latest.json``.
-    Fallback is the GitHub Releases API.
+    Three strategies, in order:
+    1. versions.json index (raw.githubusercontent.com — NO rate limit)
+    2. GitHub Releases API (rate-limited to 60 req/hour unauthenticated)
+    3. Direct version-probe (tries known version tags directly)
     """
 
     def __init__(
@@ -34,6 +36,10 @@ class ReleaseFeed:
             "User-Agent": "MT5TradingWorkstation-Updater/1.0",
             "Accept": "application/json",
         }
+
+    @property
+    def versions_json_url(self) -> str:
+        return f"https://raw.githubusercontent.com/{self.repo}/main/versions.json"
 
     @property
     def api_latest_url(self) -> str:
@@ -51,91 +57,67 @@ class ReleaseFeed:
                 client.close()
 
     def _fetch_with_client_sync(self, client: httpx.Client) -> UpdateInfo:
-        """Fetch the latest release's metadata.
+        """Fetch using three strategies, best-first."""
 
-        GitHub Releases does NOT support a stable ``/releases/download/latest/...``
-        URL — ``latest`` would have to be a moving git tag (which GitHub's release
-        asset path resolves against tag_name of an actual Release, not just any tag).
-
-        We try two strategies, in order:
-
-        **Strategy 1 (preferred): GitHub Releases API.**
-        Query ``/repos/{repo}/releases/latest`` to discover the latest release
-        ``tag_name``, then fetch ``releases/download/{tag_name}/latest.json``.
-        This is the canonical approach but is rate-limited to 60 requests/hour
-        for unauthenticated clients. If the API returns 403 (rate limit), we
-        fall back to Strategy 2.
-
-        **Strategy 2 (fallback): hardcoded version probe.**
-        Try fetching ``releases/download/v{X.Y.Z}/latest.json`` for a list of
-        known version candidates (read from the ``min_supported_version`` field
-        of the previous fetch, or hardcoded). This bypasses the API entirely
-        and downloads directly from the release asset CDN.
-
-        If both strategies fail, raise ``ReleaseFeedError``.
-        """
-        # Strategy 1: GitHub Releases API (preferred).
+        # Strategy 1: versions.json index (no rate limit!)
         try:
-            log.info(f"Fetching latest release info from {self.api_latest_url}")
+            log.info(f"Fetching versions.json from {self.versions_json_url}")
+            resp = client.get(self.versions_json_url)
+            if resp.status_code == 200:
+                versions_data = resp.json()
+                latest_tag = versions_data.get("latest_tag", "")
+                if latest_tag:
+                    latest_json_url = f"https://github.com/{self.repo}/releases/download/{latest_tag}/latest.json"
+                    log.info(f"Fetching latest.json from {latest_json_url}")
+                    resp = client.get(latest_json_url)
+                    if resp.status_code == 200:
+                        return self._parse_update_info(resp.json())
+                    log.warning(f"latest.json returned HTTP {resp.status_code} for {latest_tag}")
+            log.warning(f"versions.json returned HTTP {resp.status_code}, trying API")
+        except Exception as exc:  # noqa: BLE001
+            log.warning(f"versions.json fetch failed: {exc}, trying API")
+
+        # Strategy 2: GitHub Releases API (rate-limited)
+        try:
+            log.info(f"Fetching latest release from API: {self.api_latest_url}")
             resp = client.get(self.api_latest_url)
             if resp.status_code == 200:
                 api_data = resp.json()
-                tag_name = api_data.get("tag_name")
+                tag_name = api_data.get("tag_name", "")
                 if tag_name:
-                    # Step 3: fetch latest.json from the discovered release tag.
                     latest_json_url = f"https://github.com/{self.repo}/releases/download/{tag_name}/latest.json"
                     log.info(f"Fetching latest.json from {latest_json_url}")
                     resp = client.get(latest_json_url)
                     if resp.status_code == 200:
-                        data = resp.json()
-                        return self._parse_update_info(data)
-                    log.warning(f"latest.json not found on release {tag_name} (HTTP {resp.status_code})")
+                        return self._parse_update_info(resp.json())
             elif resp.status_code == 403:
-                log.warning("GitHub API rate limit exceeded (HTTP 403). Falling back to " "direct version-probe strategy.")
+                log.warning("GitHub API rate-limited (403), trying version probe")
             elif resp.status_code == 404:
-                raise ReleaseFeedError("No GitHub Release found. The first release must be created " "before the in-app updater can check for updates.")
+                raise ReleaseFeedError("No GitHub Release found.")
             else:
-                log.warning(f"GitHub API returned HTTP {resp.status_code}, trying fallback strategy.")
-        except httpx.RequestError as exc:
-            log.warning(f"Network error on GitHub API: {exc}, trying fallback.")
+                log.warning(f"GitHub API HTTP {resp.status_code}, trying version probe")
         except ReleaseFeedError:
             raise
         except Exception as exc:  # noqa: BLE001
-            log.warning(f"GitHub API query failed: {exc}, trying fallback.")
+            log.warning(f"GitHub API failed: {exc}, trying version probe")
 
-        # Strategy 2: direct version-probe (fallback when API is rate-limited).
-        # Try a small list of candidate version tags. The release.yml workflow
-        # always uploads latest.json to the release tagged with the version,
-        # so if we know the version we can fetch directly.
+        # Strategy 3: direct version-probe
         return self._fallback_version_probe(client)
 
     def _fallback_version_probe(self, client: httpx.Client) -> UpdateInfo:
-        """Fetch ``latest.json`` by trying known version tags directly.
-
-        This bypasses the GitHub API entirely. We try the current app version
-        +1 (e.g., if the app is 0.4.0, we try v0.4.1, v0.5.0, v1.0.0), and
-        also a small list of hardcoded recent versions. The first one that
-        returns a valid latest.json wins.
-
-        This is fragile but works as a fallback when the API is rate-limited.
-        The proper long-term fix is to authenticate the API call (Phase 4+).
-        """
+        """Try known version tags directly."""
         from app.__version__ import __version__ as app_version
 
-        # Build a list of candidate tags to try.
         candidates: list[str] = []
         try:
             parts = app_version.split(".")
             if len(parts) == 3:
                 major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
-                # Try patch+1, minor+1, major+1 (most likely update paths).
                 candidates.append(f"v{major}.{minor}.{patch + 1}")
                 candidates.append(f"v{major}.{minor + 1}.0")
                 candidates.append(f"v{major + 1}.0.0")
         except Exception:
             pass
-        # Also try a broad range of known versions (hardcoded for resilience).
-        # Keep this list updated with every release.
         candidates.extend(
             [
                 "v0.5.0",
@@ -155,7 +137,6 @@ class ReleaseFeed:
                 resp = client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Only return if this version is newer than the app.
                     from app.__version__ import __version__ as app_v
                     from app.updater.models import SemVer
 
@@ -168,46 +149,44 @@ class ReleaseFeed:
                             return info
                         log.info(f"Found {info.version} via fallback, but not newer than {app_v}.")
                     except Exception:
-                        return info  # Can't compare — return anyway.
+                        return info
             except Exception:
                 continue
 
-        raise ReleaseFeedError("Could not fetch latest.json via API (rate-limited) or fallback probe. " "Try again later, or check your network connection.")
+        raise ReleaseFeedError("Could not fetch latest.json via any strategy. " "Check your network connection or try again later.")
 
     # ----------------------------------------------------------------- async
     async def fetch_latest(self) -> UpdateInfo:
-        """Async fetch using ``httpx.AsyncClient``.
-
-        Same logic as :meth:`fetch_latest_sync`: first try the GitHub API,
-        then fall back to direct version-probe if rate-limited.
-        """
+        """Async fetch using ``httpx.AsyncClient``."""
         headers = self._headers
         try:
             async with httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True) as client:
-                # Strategy 1: GitHub API (preferred).
-                log.info(f"Fetching latest release info from {self.api_latest_url}")
-                resp = await client.get(self.api_latest_url)
+                # Strategy 1: versions.json
+                log.info(f"Fetching versions.json from {self.versions_json_url}")
+                resp = await client.get(self.versions_json_url)
                 if resp.status_code == 200:
-                    api_data = resp.json()
-                    tag_name = api_data.get("tag_name")
-                    if tag_name:
-                        latest_json_url = f"https://github.com/{self.repo}/releases/download/{tag_name}/latest.json"
-                        log.info(f"Fetching latest.json from {latest_json_url}")
+                    versions_data = resp.json()
+                    latest_tag = versions_data.get("latest_tag", "")
+                    if latest_tag:
+                        latest_json_url = f"https://github.com/{self.repo}/releases/download/{latest_tag}/latest.json"
                         resp = await client.get(latest_json_url)
                         if resp.status_code == 200:
                             return self._parse_update_info(resp.json())
-                elif resp.status_code == 404:
-                    raise ReleaseFeedError("No GitHub Release found. The first release must be created " "before the in-app updater can check for updates.")
-                elif resp.status_code == 403:
-                    log.warning("GitHub API rate limited (403). Falling back to version-probe.")
-                else:
-                    log.warning(f"GitHub API HTTP {resp.status_code}, trying fallback.")
 
-                # Strategy 2: fallback version-probe (same logic as sync).
-                # Reuse the sync method by extracting the probe into a helper.
-                import httpx as _httpx
+                # Strategy 2: API
+                log.info(f"Fetching latest release from API: {self.api_latest_url}")
+                resp = await client.get(self.api_latest_url)
+                if resp.status_code == 200:
+                    api_data = resp.json()
+                    tag_name = api_data.get("tag_name", "")
+                    if tag_name:
+                        latest_json_url = f"https://github.com/{self.repo}/releases/download/{tag_name}/latest.json"
+                        resp = await client.get(latest_json_url)
+                        if resp.status_code == 200:
+                            return self._parse_update_info(resp.json())
 
-                sync_client = _httpx.Client(timeout=30.0, headers=headers, follow_redirects=True)
+                # Strategy 3: version probe (sync fallback)
+                sync_client = httpx.Client(timeout=30.0, headers=headers, follow_redirects=True)
                 try:
                     return self._fallback_version_probe(sync_client)
                 finally:
@@ -215,16 +194,14 @@ class ReleaseFeed:
         except ReleaseFeedError:
             raise
         except httpx.RequestError as exc:
-            raise ReleaseFeedError(f"Network error while fetching releases: {exc}") from exc
+            raise ReleaseFeedError(f"Network error: {exc}") from exc
         except Exception as exc:  # noqa: BLE001
             raise ReleaseFeedError(f"Failed to parse release feed: {exc}") from exc
 
     # ---------------------------------------------------------------- helpers
     def _parse_update_info(self, data: dict[str, Any]) -> UpdateInfo:
         try:
-            # Ensure published_at is parsed correctly
             if isinstance(data.get("published_at"), str):
-                # Pydantic will handle ISO parsing, but ensure Z is handled
                 raw = data["published_at"]
                 if raw.endswith("Z"):
                     data = dict(data)
