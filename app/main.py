@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import platform
 import sys
 
 from loguru import logger
 
-__app_name__ = "MT5 Trading Workstation"
-__version__ = "0.1.0"
+from app.__version__ import __app_name__, __version__
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -142,6 +142,21 @@ def main(argv: list[str] | None = None) -> None:
     """Application entry point."""
     args = _parse_args(argv)
 
+    # --- Observability wiring (Phase 2) ---------------------------------
+    # Configure structured logging FIRST so every subsequent step is logged.
+    from app.observability.context import new_session_id, set_session_id
+    from app.observability.crash_handler import install_crash_handler
+    from app.observability.logger import configure_logging
+
+    configure_logging()
+    set_session_id(new_session_id())
+    install_crash_handler()
+
+    logger.info(
+        f"Starting {__app_name__} v{__version__} " f"(Python {platform.python_version()}, OS: {platform.platform()})"
+    )
+
+    # CLI-only flags handle their own exit; we return early after running them.
     if args.version:
         sys.exit(_handle_version())
 
@@ -154,7 +169,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.mt5_trade_test:
         sys.exit(_handle_mt5_trade_test())
 
-    # Normal GUI startup
+    # --- Normal GUI startup ---------------------------------------------
     from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
 
     from app.core.config import load_settings

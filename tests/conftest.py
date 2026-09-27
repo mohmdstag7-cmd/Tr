@@ -101,3 +101,105 @@ def tmp_updates_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         pass
 
     return updates_dir
+
+
+@pytest.fixture
+def tmp_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect loguru sinks to a tmp_path; configure_logging() is called by the test."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reset loguru to defaults first so previous tests' sinks don't interfere.
+    from loguru import logger
+
+    logger.remove()
+
+    # Patch the module-level _log_dir so get_log_dir() returns our tmp_path.
+    import app.observability.logger as logger_mod  # noqa: WPS433
+
+    monkeypatch.setattr(logger_mod, "_log_dir", log_dir, raising=False)
+
+    yield log_dir
+
+    # Teardown: remove all sinks and reset state.
+    logger.remove()
+    monkeypatch.setattr(logger_mod, "_log_dir", None, raising=False)
+
+
+@pytest.fixture
+def tmp_crash_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect crash handler to a tmp_path."""
+    crash_dir = tmp_path / "crash_reports"
+    crash_dir.mkdir(parents=True, exist_ok=True)
+
+    import app.observability.crash_handler as crash_mod  # noqa: WPS433
+
+    if hasattr(crash_mod, "_crash_dir"):
+        monkeypatch.setattr(crash_mod, "_crash_dir", crash_dir, raising=False)
+    if hasattr(crash_mod, "get_crash_dir"):
+        monkeypatch.setattr(crash_mod, "get_crash_dir", lambda: crash_dir, raising=False)
+
+    return crash_dir
+
+
+@pytest.fixture
+def tmp_audit_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect audit log to a tmp_path."""
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+
+    import app.observability.audit as audit_mod  # noqa: WPS433
+
+    if hasattr(audit_mod, "_audit_dir"):
+        monkeypatch.setattr(audit_mod, "_audit_dir", audit_dir, raising=False)
+
+    # Re-create the singleton audit_log so it picks up the new dir.
+    if hasattr(audit_mod, "audit_log") and hasattr(audit_mod.audit_log, "_dir"):
+        monkeypatch.setattr(audit_mod.audit_log, "_dir", audit_dir, raising=False)
+
+    return audit_dir
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _configure_logging_for_session(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """Configure logging ONCE per session so background threads (UpdateChecker,
+    watchdog) don't crash when their log call hits a sink being torn down.
+
+    Tests that need a fresh log dir use the ``tmp_log_dir`` fixture instead.
+    """
+    from loguru import logger
+
+    logger.remove()
+    log_dir = tmp_path_factory.mktemp("logs_session")
+
+    import app.observability.logger as logger_mod  # noqa: WPS433
+
+    logger_mod._log_dir = log_dir  # type: ignore[attr-defined]
+    try:
+        logger_mod.configure_logging(log_dir=log_dir, default_level="DEBUG")
+    except Exception:
+        pass
+
+    yield log_dir
+
+    logger.remove()
+    logger_mod._log_dir = None  # type: ignore[attr-defined]
+
+
+@pytest.fixture(autouse=True)
+def _disable_auto_update_check_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the 5-second auto-update-check QTimer in MainWindow during tests.
+
+    Background: MainWindow reads ``AppSettings.check_updates_on_startup`` and
+    schedules an UpdateChecker call 5s after construction. The UpdateChecker
+    runs in a QThread and writes logs via loguru — which races with tests
+    that call ``configure_logging()`` themselves and ``logger.remove()``.
+
+    We patch ``QTimer.singleShot`` to a no-op so the auto-check never fires.
+    """
+    from PySide6.QtCore import QTimer
+
+    def _no_op_single_shot(*args: object, **kwargs: object) -> None:  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr(QTimer, "singleShot", _no_op_single_shot, raising=False)
