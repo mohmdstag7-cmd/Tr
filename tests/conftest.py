@@ -235,9 +235,16 @@ def mt5_gateway_with_fake(fake_mt5: Any, monkeypatch: pytest.MonkeyPatch, qapp: 
     gateway = MT5Gateway(parent=qapp)
     yield gateway
 
-    # Teardown: stop the worker thread.
+    # Teardown: stop the worker thread cleanly.
+    # The gateway's QThread must be quit + waited before the QObjects are destroyed,
+    # otherwise Qt prints "QThread: Destroyed while thread is still running".
     try:
-        gateway.shutdown()
+        gateway.close()
+    except Exception:
+        pass
+    # Give the event loop a chance to process the quit signal.
+    try:
+        qapp.processEvents()
     except Exception:
         pass
 
