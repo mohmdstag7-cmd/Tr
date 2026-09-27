@@ -78,3 +78,26 @@ def tmp_settings_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(config_module, "get_config_dir", _get_config_dir, raising=False)
 
     return tmp_path
+
+
+@pytest.fixture
+def tmp_updates_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Provide a temp dir for the updater's previous_installer storage.
+
+    Patches the data dir used by :class:`app.updater.installer.Installer` and
+    the ``MT5_DATA_DIR`` env var so no real user data is touched.
+    """
+    updates_dir = tmp_path / "updates_data"
+    updates_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("MT5_DATA_DIR", str(updates_dir))
+
+    try:
+        import app.updater.installer as inst_mod  # noqa: WPS433
+
+        if hasattr(inst_mod, "_get_data_dir"):
+            monkeypatch.setattr(inst_mod, "_get_data_dir", lambda: updates_dir)
+    except ImportError:
+        # Updater module not importable on this platform; skip.
+        pass
+
+    return updates_dir

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Slot
+from loguru import logger
+from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -225,6 +226,60 @@ class MainWindow(QMainWindow):
         # Default page
         self.stack.setCurrentIndex(self._page_index["dashboard"])
 
+        # In-app auto-updater (Part J).
+        # Wrapped in try/except so a missing optional dep (e.g., httpx not installed
+        # in a stripped dev env) doesn't break the window construction.
+        self.update_checker = None
+        try:
+            from app.updater.updater import UpdateChecker
+
+            self.update_checker = UpdateChecker(parent=self)
+            self.update_checker.update_available.connect(self._on_update_available)
+            self.update_checker.no_update.connect(self._on_no_update)
+            self.update_checker.error.connect(self._on_update_error)
+            # Auto-check 5s after startup if the setting is on.
+            try:
+                from app.core.config import load_settings
+
+                settings = load_settings()
+                if settings.check_updates_on_startup and self.update_checker is not None:
+                    QTimer.singleShot(5000, self.update_checker.start_check)
+            except Exception:
+                logger.exception("Failed to read update settings; skipping auto-check")
+        except Exception:
+            logger.exception("Failed to initialize UpdateChecker; updates disabled")
+
+    @Slot(object)
+    def _on_update_available(self, update_info: object) -> None:
+        """Show a toast when an update is available."""
+        try:
+            version = getattr(update_info, "version", "new")
+        except Exception:
+            version = "new"
+        logger.info(f"Update available: v{version}")
+        # Show a small toast pointing to Settings.
+        from app.ui.widgets.toast import Toast
+
+        toast = Toast(self)
+        toast.show_toast(
+            tr("update.available_toast", default=f"v{version} available — see Settings"),
+            kind="info",
+            duration_ms=5000,
+        )
+
+    @Slot()
+    def _on_no_update(self) -> None:
+        logger.debug("Update check: already on latest version")
+
+    @Slot(str)
+    def _on_update_error(self, message: str) -> None:
+        logger.warning(f"Update check error: {message}")
+
+    def check_for_updates(self) -> None:
+        """Public entry point for the Settings page and command palette."""
+        if self.update_checker is not None:
+            self.update_checker.start_check()
+
     @Slot(str)
     def _on_page_requested(self, page_id: str) -> None:
         idx = self._page_index.get(page_id)
@@ -271,8 +326,8 @@ class MainWindow(QMainWindow):
         elif command_id == "toggle_theme":
             self._toggle_theme()
         elif command_id == "toggle_language":
-            # Stub: toggle EN/FA label
-            current = "fa" if self.page_settings.radio_fa.isChecked() else "en"
+            # Toggle EN <-> FA by reading the AppSettings.language attribute.
+            current = getattr(self.page_settings._settings, "language", "en")
             new_lang = "en" if current == "fa" else "fa"
             self.page_settings.set_language(new_lang)
         elif command_id == "kill_switch":

@@ -14,18 +14,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class AppSettings(BaseSettings):
     """Global application settings."""
 
-    theme: Literal["dark", "light"] = "dark"
-    language: Literal["en", "fa"] = "en"
-    simple_mode: bool = True
-    check_updates_on_startup: bool = True
-    pause_updates_during_auto: bool = True
-
     model_config = SettingsConfigDict(
         env_prefix="MT5TW_",
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    theme: Literal["dark", "light"] = "dark"
+    language: Literal["en", "fa"] = "en"
+    simple_mode: bool = True
+    check_updates_on_startup: bool = True
+    pause_updates_during_auto: bool = True
+    update_repo: str = "mohmdstag7-cmd/Tr"
+
+    def save(self) -> None:
+        """Persist these settings to disk as JSON (calls save_settings(self))."""
+        save_settings(self)
 
 
 def _config_path() -> Path:
