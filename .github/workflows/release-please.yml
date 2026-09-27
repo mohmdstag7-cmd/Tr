@@ -1,0 +1,25 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Run release-please
+        uses: google-github-actions/release-please-action@v4
+        with:
+          release-type: python
+          package-name: mt5-trading-workstation
+          bump-minor-pre-major: false
+          include-v-in-tag: true
+          extra-files: app/__version__.py
