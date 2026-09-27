@@ -24,7 +24,7 @@ dependencies = [
     "keyring==25.4.1",
     "PyYAML==6.0.2",
     "supabase==2.7.4",
-    "lightgbm==4.5.0",
+    "lightgbm==4.7.0",
     "scikit-learn==1.5.2",
     "shap==0.46.0",
     "joblib==1.4.2",
