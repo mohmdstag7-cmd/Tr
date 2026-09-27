@@ -139,8 +139,19 @@ class ReleaseFeed:
                 candidates.append(f"v{major + 1}.0.0")
         except Exception:
             pass
-        # Also try some known recent versions (hardcoded for resilience).
-        candidates.extend(["v0.4.0", "v0.3.0", "v0.2.0", "v0.1.0"])
+        # Also try a broad range of known versions (hardcoded for resilience).
+        # Keep this list updated with every release.
+        candidates.extend(
+            [
+                "v0.5.0",
+                "v0.4.2",
+                "v0.4.1",
+                "v0.4.0",
+                "v0.3.0",
+                "v0.2.0",
+                "v0.1.0",
+            ]
+        )
 
         for tag in candidates:
             url = f"https://github.com/{self.repo}/releases/download/{tag}/latest.json"

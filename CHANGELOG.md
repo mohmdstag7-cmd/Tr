@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-09-27
+
+### Fixed
+- **Real Inno Setup installer**: `release.yml` now compiles `scripts/installer.iss` with `iscc /DAppVersion=X.Y.Z` instead of copying the bare PyInstaller exe. The resulting Setup.exe is a full self-extracting installer (~150+ MB) that includes the `_internal/` directory. The previous 19.5 MB "installer" was unrunnable from a temp dir.
+- **Delayed relaunch after install**: `Installer.relaunch_after_install()` now spawns a daemon thread that waits 3s then relaunches the app via `subprocess.Popen` with `DETACHED_PROCESS` on Windows. The previous implementation just called `sys.exit(0)` without scheduling a relaunch.
+- **Hardcoded version label**: `MainWindow` top-bar version label now reads from `__version__` instead of being hardcoded to "v0.1.0".
+- **Fallback version-probe list**: `release_feed.py` now includes v0.4.1, v0.4.2, and v0.5.0 in the hardcoded candidate list for the fallback strategy (used when GitHub API is rate-limited).
+
+## [0.4.1] - 2026-09-27
+
+### Fixed
+- **GitHub API rate limit handling**: Added a fallback strategy to `release_feed.py` that probes known version tags directly when the GitHub API returns HTTP 403 (rate limit exceeded). Bypasses the API entirely and downloads `latest.json` from the release asset CDN.
+
 ## [0.4.0] - 2026-09-27
 
 ### Added

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -76,17 +77,44 @@ class Installer:
         return proc.pid
 
     def relaunch_after_install(self) -> None:
-        """Schedule relaunch of the newly installed exe and exit."""
-        # The installer overwrites the same install dir; we just exit.
-        # On Windows the installer will handle file replacement on next launch.
-        # For portable mode, the exe is in the same dir as current executable.
-        Path(sys.executable)
-        # If running as python script (dev), just exit
-        log.info("Exiting for installer to complete; app will be relaunched by installer")
-        # Give installer a moment to start
+        """Schedule relaunch of the newly installed exe and exit.
+
+        Per audit (Area 3, step 13): the previous implementation just called
+        ``sys.exit(0)`` without scheduling a relaunch. With a REAL Inno Setup
+        installer (which has ``[Run] postinstall`` in installer.iss), the
+        installer itself will relaunch the app. But as a safety net — in case
+        the installer's postinstall is skipped (e.g. ``/VERYSILENT`` without
+        ``/NORESTART``) — we also schedule a delayed relaunch of our own exe.
+
+        The delay (3 seconds) gives the installer time to finish writing files
+        before we try to launch the new version.
+        """
+        import threading
+
+        exe_path = Path(sys.executable)
+
+        def _delayed_relaunch() -> None:
+            """Wait 3s then relaunch the app (in a daemon thread)."""
+            import time
+
+            time.sleep(3.0)
+            try:
+                # On Windows, the installer may have just replaced our exe.
+                # subprocess.Popen with creationflags=DETACHED_PROCESS ensures
+                # the new process survives our own exit.
+                kwargs: dict[str, Any] = {}
+                if sys.platform == "win32":
+                    kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
+                subprocess.Popen([str(exe_path)], **kwargs)  # noqa: S603
+                log.info(f"Relaunched {exe_path} after install")
+            except Exception as exc:  # noqa: BLE001
+                log.warning(f"Delayed relaunch failed: {exc}")
+
+        # Start the relaunch in a daemon thread so it survives our exit.
+        t = threading.Thread(target=_delayed_relaunch, daemon=True)
+        t.start()
+        log.info("Exiting for installer to complete; app will be relaunched in 3s")
         try:
-            # On Windows, we could schedule a relaunch via Popen + delay
-            # For now, simply exit — Inno Setup can launch the app if configured
             sys.exit(0)
         except SystemExit:
             raise

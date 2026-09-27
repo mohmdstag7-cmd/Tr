@@ -72,7 +72,7 @@ class MainWindow(QMainWindow):
         self.lbl_app.setStyleSheet("font-size: 14px; font-weight: 700;")
         top_layout.addWidget(self.lbl_app)
 
-        self.lbl_version = QLabel("v0.1.0", self.top_bar)
+        self.lbl_version = QLabel(f"v{__version__}", self.top_bar)
         self.lbl_version.setObjectName("AppVersionLabel")
         self.lbl_version.setStyleSheet("opacity: 0.6; font-size: 11px;")
         top_layout.addWidget(self.lbl_version)

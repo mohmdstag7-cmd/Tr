@@ -65,26 +65,46 @@ jobs:
           }
           Write-Host "Build verification OK."
 
-      - name: Package portable zip + installer stub
+      - name: Build Inno Setup installer + portable zip
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
+          Write-Host "Building Inno Setup installer for v$version..."
+
+          # Compile the Inno Setup installer. The installer.iss script
+          # packages the entire dist/MT5TradingWorkstation/ folder (including
+          # the _internal/ directory) into a single self-extracting Setup.exe.
+          # This is the REAL installer — not a copy of the bare PyInstaller exe.
+          iscc /DAppVersion=$version scripts/installer.iss
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Inno Setup compilation failed (exit code $LASTEXITCODE)"
+            exit 1
+          }
+
+          $installerPath = "dist/MT5TradingWorkstation-Setup-$version.exe"
+          if (-not (Test-Path $installerPath)) {
+            Write-Error "Installer not found at $installerPath"
+            exit 1
+          }
+          $installerSize = (Get-Item $installerPath).Length
+          Write-Host "Installer: $installerPath ($installerSize bytes)"
+          if ($installerSize -lt 50000000) {
+            Write-Error "Installer is too small ($installerSize bytes) — expected > 50MB for a full Inno Setup build"
+            exit 1
+          }
+
+          # Build the portable zip from the one-folder PyInstaller output.
           $zipPath = "dist/MT5TradingWorkstation-$version-portable.zip"
           Compress-Archive -Path "dist/MT5TradingWorkstation/*" -DestinationPath $zipPath -Force
           if (-not (Test-Path $zipPath)) {
             Write-Error "Failed to create portable zip at $zipPath"
             exit 1
           }
-          # Stub installer exe: copy the portable exe as the "installer" for
-          # now. Phase 16 will replace this with a real Inno Setup installer.
-          # The auto-updater verifies SHA-256, so this file must exist and
-          # match the checksum we compute next.
-          $installerPath = "dist/MT5TradingWorkstation-Setup-$version.exe"
-          Copy-Item "dist/MT5TradingWorkstation/MT5TradingWorkstation.exe" $installerPath -Force
+
           # Remove the one-folder build dir so it doesn't interfere with
           # the sha256sum glob below.
           Remove-Item -Recurse -Force "dist/MT5TradingWorkstation"
-          Write-Host "Portable zip + installer stub created."
+          Write-Host "Installer + portable zip created."
           Write-Host "dist/ contents:"
           Get-ChildItem dist/ | Format-Table Name, Length
 
