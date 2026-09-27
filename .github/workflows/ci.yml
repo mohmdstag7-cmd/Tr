@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "phase/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-type-test:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Set up Python 3.11 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+          cache: "pip"
+          cache-dependency-path: "pyproject.toml"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: pip install --no-cache-dir -e ".[dev]"
+
+      - name: Ruff check
+        shell: pwsh
+        run: ruff check .
+
+      - name: Ruff format check
+        shell: pwsh
+        run: ruff format --check .
+
+      - name: Mypy
+        shell: pwsh
+        run: mypy app
+
+      - name: Pytest
+        shell: pwsh
+        # FakeMT5 is used in tests/ for any MT5 dependency — real MT5 not available in CI
+        run: pytest --cov=app --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.xml
+            .coverage
+          if-no-files-found: warn

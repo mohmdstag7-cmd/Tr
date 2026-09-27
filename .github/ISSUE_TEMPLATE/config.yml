@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Specification
+    url: https://github.com/OWNER/REPO/blob/main/docs/SPEC.md
+    about: Read the full MT5 Trading Workstation spec (source of truth for phases and acceptance criteria)
+  - name: Progress Tracker
+    url: https://github.com/OWNER/REPO/blob/main/docs/PROGRESS.md
+    about: Check current phase status and what is already implemented
