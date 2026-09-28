@@ -279,3 +279,36 @@ def gateway_with_connection(mt5_gateway_with_fake: Any) -> Any:
     fut = gateway.initialize(path=None, login=12345, password="test", server="Demo")
     fut.result(timeout=10)
     return gateway
+
+
+# ----------------------------------------------------------------- Phase 4
+@pytest.fixture
+def tmp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Provide a fresh Database instance with a tmp_path DB."""
+    from app.storage.database import Database
+
+    db_path = tmp_path / "test.db"
+    # Reset the singleton
+    import app.storage.database as db_mod
+
+    monkeypatch.setattr(db_mod, "_database", None, raising=False)
+
+    db = Database(db_path=str(db_path))
+    db.migrate()
+    yield db
+    db.close()
+    monkeypatch.setattr(db_mod, "_database", None, raising=False)
+
+
+@pytest.fixture
+def db(tmp_db: Any) -> Any:
+    """Return the Database instance (alias for tmp_db)."""
+    return tmp_db
+
+
+@pytest.fixture
+def outbox(db: Any) -> Any:
+    """Return an Outbox instance connected to the test DB."""
+    from app.storage.outbox import Outbox
+
+    return Outbox(db)
