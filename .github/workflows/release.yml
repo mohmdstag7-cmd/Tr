@@ -112,7 +112,7 @@ jobs:
           PORTABLE_SHA: ${{ steps.checksums.outputs.portable_sha }}
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/MT5TradingWorkstation-Setup-*.exe
