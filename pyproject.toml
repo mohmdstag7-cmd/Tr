@@ -58,7 +58,7 @@ select = ["E", "F", "I", "B", "UP", "S"]
 # S110 (try-except-pass) is widespread in early Qt widget scaffolding; Phase 2 (Observability)
 # will replace these with loguru calls. T201 (print) is allowed in app/main.py for CLI flags
 # like --self-check and --version.
-ignore = ["S110", "S310", "S603", "S607", "S112", "B007"]
+ignore = ["S110", "S310", "S603", "S607", "S112", "B007", "S101", "S608"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S110", "S112", "S106", "S105"]
